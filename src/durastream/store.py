@@ -30,33 +30,48 @@ class Store:
     def _path(self, name: str) -> str:
         return os.path.join(self._streams_dir, name + ".log")
 
-    def create(
-        self, name: str, content_type: str = DEFAULT_CONTENT_TYPE
-    ) -> DurableStream:
-        """Create a stream, or return the existing one (idempotent)."""
+    def _fsync_dir(self) -> None:
+        # persist the dir entry, so it survives a crash
+        fd = os.open(self._streams_dir, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def create(self, name: str, content_type: str | None = None) -> DurableStream:
+        """Create a stream, or return the existing one (idempotent).
+
+        Raises ValueError if content_type is given and differs from the existing one.
+        """
         check_name(name)
         with self._lock:
-            if name in self._open:
-                return self._open[name]
-            row = self._db.execute(
-                "SELECT content_type, closed FROM streams WHERE name=?", (name,)
-            ).fetchone()
+            existing = self._open.get(name)
+            if existing is None:
+                row = self._db.execute(
+                    "SELECT content_type, closed FROM streams WHERE name=?", (name,)
+                ).fetchone()
+            else:
+                row = (existing.content_type, existing.closed)
             if row is None:
+                content_type = content_type or DEFAULT_CONTENT_TYPE
                 self._db.execute(
                     "INSERT INTO streams(name, content_type, closed, created_at)"
                     " VALUES(?,?,0,?)",
                     (name, content_type, time.time()),
                 )
                 self._db.commit()
-                # ponytail: fsync the new dir entry so the file survives a crash.
-                fd = os.open(self._streams_dir, os.O_RDONLY)
-                try:
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
+                self._fsync_dir()
                 closed = False
             else:
-                content_type, closed = row[0], bool(row[1])
+                content_type_existing, closed = row[0], bool(row[1])
+                if content_type is not None and content_type != content_type_existing:
+                    raise ValueError(
+                        f"content_type mismatch for {name!r}: "
+                        f"{content_type_existing!r} != {content_type!r}"
+                    )
+                content_type = content_type_existing
+            if existing is not None:
+                return existing
             return self._open_stream(name, content_type, closed)
 
     def open(self, name: str) -> DurableStream:
@@ -84,13 +99,15 @@ class Store:
             self._db.commit()
             try:
                 os.remove(self._path(name))
+                self._fsync_dir()
             except FileNotFoundError:
                 pass
 
     def list(self) -> list[str]:
-        return [
-            r[0] for r in self._db.execute("SELECT name FROM streams ORDER BY name")
-        ]
+        with self._lock:
+            return [
+                r[0] for r in self._db.execute("SELECT name FROM streams ORDER BY name")
+            ]
 
     def _mark_closed(self, name: str) -> None:
         with self._lock:

@@ -124,6 +124,20 @@ def test_content_type_mismatch():
         except ValueError:
             pass
 
+
+def test_delete_and_reopen():
+    with tempfile.TemporaryDirectory() as root:
+        store = Store(root)
+        store.create("s", "text/plain").append(b"x")
+        store.delete("s")
+        try:
+            store.open("s")
+            assert False, "open after delete should raise"
+        except KeyError:
+            pass
+        assert store.create("s", "text/plain").read(0) == []  # recreated empty
+
+
 def test_invalid_name():
     with tempfile.TemporaryDirectory() as root:
         try:
@@ -131,3 +145,19 @@ def test_invalid_name():
             assert False, "invalid name should raise"
         except ValueError:
             pass
+
+
+def test_concurrent_create_list():
+    with tempfile.TemporaryDirectory() as root:
+        store = Store(root)
+        n = 40
+
+        def make(i):
+            store.create(f"s{i}", "text/plain")
+
+        threads = [threading.Thread(target=make, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(store.list()) == n

@@ -1,3 +1,4 @@
+import mmap
 import struct
 import zlib
 
@@ -10,7 +11,7 @@ def pack_frame(payload: bytes) -> bytes:
     return HEADER.pack(len(payload), zlib.crc32(payload)) + payload
 
 
-def iter_frames(data: bytes):
+def iter_frames(data: bytes | mmap.mmap):
     """
     Yield payload, next_pos per intact frame
     stop at the first torn/corrupt one.

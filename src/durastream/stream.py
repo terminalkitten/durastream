@@ -1,3 +1,4 @@
+import mmap
 import os
 import threading
 
@@ -34,13 +35,19 @@ class DurableStream:
         if not os.path.exists(self._path):
             open(self._path, "ab").close()
             return
-        with open(self._path, "rb") as f:
-            data = f.read()
+        size = os.path.getsize(self._path)
+        if size == 0:  # mmap rejects empty files
+            return
         index = [0]
-        for _payload, end in iter_frames(data):
-            index.append(end)
+        # mmap so a huge log isn't read fully into RAM
+        with (
+            open(self._path, "rb") as f,
+            mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data,
+        ):
+            for _payload, end in iter_frames(data):
+                index.append(end)
         self._index = index
-        if index[-1] != len(data):
+        if index[-1] != size:
             # ponytail: torn/corrupt tail, drop it so appends stay contiguous.
             with open(self._path, "r+b") as f:
                 f.truncate(index[-1])
