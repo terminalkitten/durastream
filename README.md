@@ -1,4 +1,8 @@
-# durastream
+<p align="center">
+  <img src="https://raw.githubusercontent.com/terminalkitten/durastream/main/public/dura-stream-logo.png" alt="dura.stream" width="180">
+</p>
+
+# dura.stream
 
 Minimal durable streaming on local disk. Append-only, crash-safe, tailable streams
 you import into any Python app, no server, no dependencies: stdlib only.
@@ -165,7 +169,7 @@ per stream is serialized by an in-process lock; SQLite runs in WAL mode.
 
 ## Concurrency
 
-durastream is a **single-process** engine. Within one process it is fully
+dura.stream is a **single-process** engine. Within one process it is fully
 concurrent: many threads or coroutines, many streams, or many writers into one
 shared stream are all coordinated by a per-stream lock, so offsets stay
 consistent and no data is lost (see `make demo-concurrent`). Use `AsyncStore`
