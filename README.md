@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/terminalkitten/durastream/main/public/dura-stream-logo.png" alt="dura.stream" width="180">
+  <img src="https://raw.githubusercontent.com/terminalkitten/durastream/main/docs/assets/dura-stream-logo.png" alt="dura.stream" width="180">
 </p>
 
 # dura.stream

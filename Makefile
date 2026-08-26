@@ -33,3 +33,6 @@ demo-concurrent:
 demo-serve:
 	uv run python demos/fastapi_resume.py
 
+# swallow trailing positional args (e.g. `make demo-restart 100 50`)
+%:
+	@:
