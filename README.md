@@ -63,6 +63,24 @@ stream.append(b"live-1")
 
 The generator returns once the stream is closed and the consumer has caught up.
 
+## Async
+
+`AsyncStore` mirrors the sync API with the same names, awaitable:
+
+```python
+from durastream import AsyncStore
+
+store = AsyncStore("./data")
+stream = await store.create("chat")
+
+await stream.append(b"hello ")
+await stream.read(0)  # [b"hello "]
+
+async for record in stream.subscribe(0):  # replay, then tail (poll-based)
+    print(record)
+```
+
+
 ## Demo
 
 `demos/bulk_stream.py` bulk-streams 100k JSON readings through one stream while a
