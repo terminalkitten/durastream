@@ -15,7 +15,7 @@ source = "vcs"
 raw-options = { version_scheme = "no-guess-dev", fallback_version = "0.0.0" }
 
 [tool.hatch.build.targets.wheel]
-bypass-selection = true
+packages = ["src/durastream"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -33,4 +33,6 @@ exclude = ["/tests", "/demos"]
 dev = [
     "ruff>=0.16.4",
     "ty>=0.0.74",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
