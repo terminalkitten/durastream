@@ -1,4 +1,4 @@
-.PHONY: lint typecheck format test demo demo-bench demo-restart demo-queue demo-ledger demo-serve present-preview present-build
+.PHONY: lint typecheck format test demo demo-bench demo-restart demo-queue demo-ledger demo-concurrent demo-serve present-preview present-build
 
 lint: format typecheck
 
@@ -26,6 +26,9 @@ demo-queue:
 
 demo-ledger:
 	uv run python demos/ledger.py
+
+demo-concurrent:
+	uv run python demos/concurrent_users.py
 
 demo-serve:
 	uv run python demos/fastapi_resume.py

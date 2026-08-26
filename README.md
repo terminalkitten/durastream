@@ -120,6 +120,12 @@ appends deposit/withdraw events, then reopens and rebuilds the balance purely by
 replaying the log (`read(0)`), including a point-in-time balance query. The log
 is the source of truth; state is derived.
 
+`demos/concurrent_users.py` (`make demo-concurrent`) runs 40 concurrent users on
+one `AsyncStore` in a single process: first a stream per user (no cross-talk),
+then all 40 writing into one shared stream while a consumer tails the interleaved
+firehose (nothing lost). In-process concurrency is fully coordinated by the
+per-stream lock; cross-process writes to the same stream need a single writer.
+
 ## Closing & deleting
 
 ```python
@@ -157,6 +163,18 @@ data/
 CRC is `zlib.crc32` (CRC-32/ISO-HDLC). One writer
 per stream is serialized by an in-process lock; SQLite runs in WAL mode.
 
+## Concurrency
+
+durastream is a **single-process** engine. Within one process it is fully
+concurrent: many threads or coroutines, many streams, or many writers into one
+shared stream are all coordinated by a per-stream lock, so offsets stay
+consistent and no data is lost (see `make demo-concurrent`). Use `AsyncStore`
+from async code.
+
+Across **separate processes** the rule is **one writer per stream**. The lock is
+an in-memory `threading.Lock`, so it cannot coordinate two processes: if two
+processes write the same stream they each keep their own offset index and the
+offsets diverge silently. Route each stream to a single owning process. Concurrent readers in other processes are fine; they re-open to pick up new records.
 
 ## Develop
 
