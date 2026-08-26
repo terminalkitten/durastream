@@ -3,6 +3,7 @@ name = "durastream"
 dynamic = ["version"]
 description = "Tiny durable streaming on local disk"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = []
 
