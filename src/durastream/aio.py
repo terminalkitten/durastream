@@ -5,7 +5,6 @@ from collections.abc import AsyncIterator
 
 from .store import Store
 from .stream import DurableStream
-from .utils import DEFAULT_CONTENT_TYPE
 
 
 class AsyncDurableStream:
@@ -63,7 +62,7 @@ class AsyncStore:
         return self._store.root
 
     async def create(
-        self, name: str, content_type: str = DEFAULT_CONTENT_TYPE
+        self, name: str, content_type: str | None = None
     ) -> AsyncDurableStream:
         s = await asyncio.to_thread(self._store.create, name, content_type)
         return AsyncDurableStream(s)

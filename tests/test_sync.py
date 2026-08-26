@@ -110,3 +110,24 @@ def test_tokens():
     assert from_token("-1", 5) == 0
     assert from_token("now", 5) == 5
     assert from_token("00000000000000000003", 5) == 3
+
+
+def test_content_type_mismatch():
+    with tempfile.TemporaryDirectory() as root:
+        store = Store(root)
+        store.create("s", "text/plain")
+        store.create("s", "text/plain")  # same type ok
+        store.create("s")  # no type asserted, ok
+        try:
+            store.create("s", "application/json")
+            assert False, "mismatch should raise"
+        except ValueError:
+            pass
+
+def test_invalid_name():
+    with tempfile.TemporaryDirectory() as root:
+        try:
+            Store(root).create("bad/name")
+            assert False, "invalid name should raise"
+        except ValueError:
+            pass
