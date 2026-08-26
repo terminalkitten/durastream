@@ -35,4 +35,10 @@ dev = [
     "ty>=0.0.74",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

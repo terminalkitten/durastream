@@ -110,11 +110,3 @@ def test_tokens():
     assert from_token("-1", 5) == 0
     assert from_token("now", 5) == 5
     assert from_token("00000000000000000003", 5) == 3
-
-
-if __name__ == "__main__":
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            print(f"ok  {name}")
-    print("all passed")

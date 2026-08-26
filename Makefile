@@ -10,7 +10,7 @@ typecheck:
 	uv run ty check
 
 test:
-	uv run python tests/test_durastream.py
+	uv run pytest -q
 
 demo:
 	uv run python demos/bulk_stream.py

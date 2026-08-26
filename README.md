@@ -161,6 +161,6 @@ per stream is serialized by an in-process lock; SQLite runs in WAL mode.
 ## Develop
 
 ```bash
-make test        # dep-free self-check (python3 tests/test_durastream.py)
+make test        # pytest (sync + async)
 make lint        # ruff format + ty typecheck
 ```
