@@ -100,9 +100,6 @@ class Completions:
     async def create(
         self,
         *,
-        model: str,
-        messages: list[dict],
-        stream: bool = True,
         delay: float = 0.03,
     ) -> AsyncIterator[Chunk]:
         """Stream the corpus token by token."""

@@ -1,0 +1,170 @@
+<!doctype html><meta charset="utf-8" /><title>durastream resume</title>
+<style>
+  body {
+    font:
+      15px/1.7 ui-monospace,
+      Menlo,
+      monospace;
+    max-width: 760px;
+    margin: 32px auto;
+    padding: 0 16px;
+    color: #222;
+  }
+  h1 {
+    font-size: 18px;
+    margin: 0 0 4px;
+  }
+  .sub {
+    color: #888;
+    margin: 0 0 16px;
+  }
+  button {
+    font: inherit;
+    padding: 6px 12px;
+    margin-right: 8px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    background: #f7f7f7;
+    cursor: pointer;
+  }
+  button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  #banner {
+    font-weight: 700;
+    height: 24px;
+    margin: 14px 0;
+  }
+  #out {
+    white-space: pre-wrap;
+    min-height: 160px;
+  }
+  .t {
+    color: #111;
+  }
+  .t.resumed {
+    background: #dcfce7;
+  }
+  .drop {
+    color: #b91c1c;
+  }
+  .resume {
+    color: #15803d;
+  }
+  .done {
+    color: #2563eb;
+  }
+  .muted {
+    color: #888;
+  }
+</style>
+<h1>durastream · resumable text stream</h1>
+<p class="sub">
+  Stop the stream, then reconnect, resumed tokens are tinted green.
+</p>
+<div>
+  <button id="bnew">New generation</button>
+  <button id="bstop">Stop (drop connection)</button>
+  <button id="breconnect">Reconnect</button>
+</div>
+<div id="banner" class="muted">starting…</div>
+<div id="out"></div>
+<script>
+  const out = document.getElementById("out"),
+    banner = document.getElementById("banner");
+  const $ = (id) => document.getElementById(id);
+  let id = null,
+    last = -1,
+    es = null,
+    done = false;
+  function setBanner(t, c) {
+    banner.textContent = t;
+    banner.className = c || "";
+  }
+  function buttons() {
+    $("bstop").disabled = !es;
+    $("breconnect").disabled = !!es || done;
+  }
+  function render(text, resumed) {
+    if (text === "[[BR]]") {
+      out.appendChild(document.createTextNode("\n\n"));
+      return;
+    }
+    const s = document.createElement("span");
+    s.className = "t" + (resumed ? " resumed" : "");
+    s.textContent = text;
+    out.appendChild(s);
+  }
+  function open(offset, recovered) {
+    const resumed = offset != null;
+    es = new EventSource(
+      "/chat/" + id + "/stream" + (resumed ? "?offset=" + offset : ""),
+    );
+    if (!recovered) {
+      setBanner(
+        resumed ? "↻ reconnected at offset " + offset : "● streaming",
+        resumed ? "resume" : "",
+      );
+    }
+    let got = 0;
+    es.onmessage = (e) => {
+      last = +e.lastEventId;
+      got++;
+      render(e.data, resumed);
+    };
+    es.addEventListener("control", (e) => {
+      if (JSON.parse(e.data).streamClosed) {
+        es.close();
+        es = null;
+        if (recovered && got === 0) {
+          startNew(); // saved stream is gone (server restarted): start fresh
+          return;
+        }
+        done = true;
+        localStorage.removeItem("ds_active");
+        setBanner("✓ completed", "done");
+        buttons();
+      }
+    });
+    buttons();
+  }
+  async function startNew() {
+    if (es) {
+      es.close();
+      es = null;
+    }
+    out.innerHTML = "";
+    last = -1;
+    done = false;
+    id = "c" + Date.now();
+    await fetch("/chat/" + id, { method: "POST" });
+    localStorage.setItem("ds_active", id); // survive a page refresh
+    open(null);
+  }
+  function stop() {
+    if (!es) return;
+    es.close();
+    es = null;
+    setBanner("✕ connection dropped: generation continues server-side", "drop");
+    buttons();
+  }
+  function reconnect() {
+    if (es || done) return;
+    open(last + 1);
+  }
+  $("bnew").onclick = startNew;
+  $("bstop").onclick = stop;
+  $("breconnect").onclick = reconnect;
+  // refresh-tolerant: recover an in-flight generation by replaying from the start
+  const saved = localStorage.getItem("ds_active");
+  if (saved) {
+    id = saved;
+    last = -1;
+    done = false;
+    setBanner("↻ recovering after refresh…", "resume");
+    open(0, true);
+  } else {
+    startNew();
+  }
+</script>
