@@ -1,8 +1,9 @@
 """LLM -> durastream -> SSE duplex benchmark: pure Python vs native engine.
 
-Writers append LLM tokens at a steady rate; SSE-style readers tail each stream
-with the read + sleep loop from demos/fastapi_resume.py, and some disconnect and
-resume mid-stream. Each scenario runs in a child process per engine (the engine
+Writers append LLM tokens at a steady rate; SSE-style readers tail each stream,
+either polling (read + sleep) or pushed (read + AsyncDurableStream.wait, as in
+demos/fastapi_resume.py), and some disconnect and resume mid-stream. The batched
+writer uses AsyncBatchWriter. Each scenario runs in a child process per engine (the engine
 is picked at import), so the whole app runs on one engine, as in production.
 
 Run: make bench-duplex   (or uv run python scripts/bench_duplex.py [--quick])
@@ -20,16 +21,17 @@ import tempfile
 import time
 
 RATE = 50  # tokens/s per chat, a typical LLM
-POLL = 0.05  # SSE loop sleep, as in demos/fastapi_resume.py
-BATCH_WINDOW = 0.05  # batched writer: one append_many per window
+POLL = 0.05  # polling readers: sleep between reads
+BATCH_WINDOW = 0.02  # batched writer: AsyncBatchWriter's default window
 DISCONNECT = 0.2  # a resuming client is gone this long
 
-# name: (chats, readers per chat, batched writer)
+# name: (chats, readers per chat, batched writer, push readers)
 SCENARIOS = {
-    "single": (1, 1, False),
-    "50 chats": (50, 1, False),
-    "fan-out": (200, 3, False),
-    "fan-out batched": (200, 3, True),
+    "single poll": (1, 1, False, False),
+    "single push": (1, 1, False, True),
+    "fan-out poll": (200, 3, False, False),
+    "fan-out push": (200, 3, False, True),
+    "fan-out push+batch": (200, 3, True, True),
 }
 
 
@@ -41,33 +43,41 @@ def pct(data: list[float], p: int) -> float:
 
 async def writer(s, tokens: int, batched: bool) -> int:
     """Emit `tokens` at RATE on an absolute schedule; returns number of appends."""
-    start = time.perf_counter()
-    buf: list[bytes] = []
-    flushed = start
+    from durastream import AsyncBatchWriter
+
     appends = 0
+    append_many = s.append_many
+
+    async def counted(batch: list[bytes]) -> int:
+        nonlocal appends
+        appends += 1
+        return await append_many(batch)
+
+    s.append_many = counted
+    w = AsyncBatchWriter(s, window=BATCH_WINDOW) if batched else None
+    start = time.perf_counter()
     for i in range(tokens):
         delay = start + i / RATE - time.perf_counter()
         if delay > 0:
             await asyncio.sleep(delay)
         tok = f"{i}:{time.perf_counter_ns()}".encode()
-        if not batched:
+        if w is not None:
+            w.write(tok)
+        else:
             await s.append(tok)
             appends += 1
-            continue
-        buf.append(tok)
-        if time.perf_counter() - flushed >= BATCH_WINDOW:
-            await s.append_many(buf)
-            buf, flushed, appends = [], time.perf_counter(), appends + 1
-    if buf:
-        await s.append_many(buf)
-        appends += 1
+    if w is not None:
+        await w.close()  # all tokens durable
     await s.close()
     return appends
 
 
-async def reader(s, tokens: int, lat: list[float], resume: list[float] | None) -> None:
-    """SSE loop: read from offset, sleep, repeat. With `resume`, disconnect halfway
-    and reconnect from the saved offset, timing the first replayed read."""
+async def reader(
+    s, tokens: int, push: bool, lat: list[float], resume: list[float] | None
+) -> None:
+    """SSE loop: read from offset, then wait for more (push) or sleep (poll). With
+    `resume`, disconnect halfway and reconnect from the saved offset, timing the
+    first replayed read."""
     offset = expect = 0
     disconnect_at = tokens // 2 if resume is not None else None
     reconnected_at = None
@@ -93,7 +103,10 @@ async def reader(s, tokens: int, lat: list[float], resume: list[float] | None) -
             await asyncio.sleep(DISCONNECT)  # client gone; tokens pile up
             reconnected_at = time.perf_counter()
             continue
-        await asyncio.sleep(POLL)
+        if push:
+            await s.wait(offset)
+        else:
+            await asyncio.sleep(POLL)
     assert expect == tokens, f"saw {expect} of {tokens} tokens"
 
 
@@ -105,7 +118,7 @@ async def lag_probe(samples: list[float], stop: asyncio.Event) -> None:
         samples.append((time.perf_counter() - t - 0.01) * 1e3)
 
 
-async def run(chats: int, readers: int, batched: bool, tokens: int) -> dict:
+async def run(chats: int, readers: int, batched: bool, push: bool, tokens: int) -> dict:
     import durastream
 
     root = tempfile.mkdtemp()
@@ -122,7 +135,7 @@ async def run(chats: int, readers: int, batched: bool, tokens: int) -> dict:
             jobs.append(writer(s, tokens, batched))
             for r in range(readers):
                 resuming = (c * readers + r) % 4 == 0  # a quarter of the readers
-                jobs.append(reader(s, tokens, lat, resume if resuming else None))
+                jobs.append(reader(s, tokens, push, lat, resume if resuming else None))
         cpu, t0 = time.process_time(), time.perf_counter()
         results = await asyncio.gather(*jobs)
         wall, cpu = time.perf_counter() - t0, time.process_time() - cpu
@@ -145,11 +158,11 @@ async def run(chats: int, readers: int, batched: bool, tokens: int) -> dict:
 
 
 def child(name: str, quick: bool) -> None:
-    chats, readers, batched = SCENARIOS[name]
+    chats, readers, batched, push = SCENARIOS[name]
     tokens = 100 if quick else 200
     if quick:
         chats = max(1, chats // 2)
-    print(json.dumps(asyncio.run(run(chats, readers, batched, tokens))))
+    print(json.dumps(asyncio.run(run(chats, readers, batched, push, tokens))))
 
 
 def main() -> None:
