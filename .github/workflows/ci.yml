@@ -21,6 +21,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: make lint # ty, ruff check + format, cargo fmt, clippy
+      - uses: EmbarkStudios/cargo-deny-action@v2 # advisories, licenses, sources
+        with:
+          manifest-path: core/Cargo.toml
 
   test:
     strategy:
