@@ -66,7 +66,7 @@ stream = await store.create("chat")
 await stream.append(b"hello ")
 await stream.read(0)
 
-async for record in stream.subscribe(0):  # poll-based tail
+async for record in stream.subscribe(0):  # replay, then pushed tail
     print(record)
 ```
 
