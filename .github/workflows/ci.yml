@@ -5,17 +5,65 @@ on:
     branches: [main]
   pull_request:
 
+# Jobs call the Makefile, so CI runs exactly what `make check` runs locally.
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          fetch-depth: 0
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-      - run: uv sync
-      - run: uv run pytest -q
-      - run: uv run ruff check .
-      - run: uv run ty check
+      - run: make lint # ty, ruff check + format, cargo fmt, clippy
+      - uses: EmbarkStudios/cargo-deny-action@v2 # advisories, licenses, sources
+        with:
+          manifest-path: core/Cargo.toml
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.12", "3.14"] # oldest supported + newest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: make test # cargo test + pytest on native and pure engines
+      - if: runner.os == 'Linux'
+        name: disk-full rollback (real ENOSPC on a 1 MiB tmpfs)
+        run: |
+          sudo mkdir -p /mnt/small
+          sudo mount -t tmpfs -o size=1m tmpfs /mnt/small
+          sudo chmod 1777 /mnt/small
+          export DURASTREAM_SMALL_FS=/mnt/small
+          uv run pytest -q tests/test_disk_full.py
+          DURASTREAM_PURE=1 uv run pytest -q tests/test_disk_full.py
+
+  # Windows has no native wheel: install the pure-Python wheel and test it there
+  windows-pure:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uvx hatchling build -t wheel -d dist
+      - run: uv venv && uv pip install pytest pytest-asyncio dist/*-py3-none-any.whl
+      - run: .venv/Scripts/python -c "import durastream as d; assert d.ENGINE == 'python', d.ENGINE"
+      - run: .venv/Scripts/python -m pytest -q tests
