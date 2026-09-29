@@ -206,9 +206,8 @@ forking. On Windows there is no `flock`, so the rule is not enforced there.
 You need [uv](https://docs.astral.sh/uv/) and a Rust toolchain ([rustup](https://rustup.rs)).
 
 ```bash
+git clone git@github.com:terminalkitten/durastream.git && cd durastream
 uv sync          # .venv + dev deps, compiles the Rust core (release mode)
-make test        # pytest (sync + async)
-make lint        # ruff format + ty typecheck
 ```
 
 `uv run` / `uv sync` recompile the Rust core automatically when anything under `core/`
@@ -223,12 +222,49 @@ tests/            one test suite, run against both engines
 scripts/bench.py  pure Python vs native benchmark
 ```
 
-Run the suite on the pure-Python engine with `DURASTREAM_PURE=1 make test`.
+### Everyday commands
+
+```bash
+make check       # lint + test: what CI runs, run this before pushing
+make full        # format, check, bench, build, in that order (edits files!)
+```
+
+### Test
+
+Both engines must pass the same `tests/`; a behaviour difference is a bug.
+
+```bash
+make test         # all three below
+make test-rust    # cargo test (core/tests)
+make test-native  # pytest on the Rust core; fails if it didn't load
+make test-pure    # pytest on the pure-Python engine (DURASTREAM_PURE=1)
+make test-diskfull  # disk-full rollback on both engines, real ENOSPC (needs Docker)
+```
+
+`tests/test_disk_full.py` fills a tiny file system so an append is half-written
+when the disk runs out, and checks the log rolls back to its last intact record.
+It skips unless `DURASTREAM_SMALL_FS` points at a small tmpfs; `make test-diskfull`
+provides one in Docker, and CI mounts one on its Linux runners.
+
+Run a single test, per engine:
+
+```bash
+uv run pytest -q tests/test_sync.py::test_tail
+DURASTREAM_PURE=1 uv run pytest -q tests/test_sync.py::test_tail
+```
+
+### Lint and format
+
+```bash
+make lint        # check only: ty, ruff check, ruff format --check, cargo fmt --check, clippy
+make format      # apply fixes: ruff --fix, ruff format, cargo fmt
+make typecheck   # ty only
+```
 
 ### Benchmark
 
 ```bash
-uv run python scripts/bench.py          # 100k records, median of 9 runs (~1 min)
+make bench                              # 100k records, median of 9 runs (~1 min)
 uv run python scripts/bench.py --quick  # 20k records, 3 runs
 ```
 
@@ -249,3 +285,31 @@ both. Apple M-series:
 | `subscribe` live 100k | 70.9ms | 11.2ms | 6.3x |
 
 fsync-bound work runs at disk speed on both engines. The native engine wins on per-record work.
+
+### Build
+
+```bash
+make build
+```
+
+writes to `dist/`:
+
+| file | what |
+|---|---|
+| `durastream-<v>-cp312-abi3-<platform>.whl` | Rust core included, for this machine only |
+| `durastream-<v>-py3-none-any.whl` | pure Python, the fallback for all other platforms |
+| `durastream-<v>.tar.gz` | sdist; installing it compiles the Rust core |
+
+Wheels for other platforms are built by CI on release. To try a built wheel in a clean venv:
+
+```bash
+# --no-cache: local rebuilds keep the same filename, uv would reuse a stale copy
+uv venv --clear /tmp/ds && VIRTUAL_ENV=/tmp/ds uv pip install --no-cache --no-index --find-links dist durastream
+/tmp/ds/bin/python -c "import durastream; print(durastream.ENGINE)"   # native
+```
+
+### CI
+
+`ci.yml` runs on every push to `main` and every PR: `make lint` plus `cargo deny`,
+`make test` on Ubuntu and macOS with Python 3.12 and 3.14 (plus the disk-full test on
+Ubuntu), and the pure-Python wheel on Windows.
