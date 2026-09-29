@@ -1,17 +1,90 @@
 """Async wrappers over the sync engine, via asyncio.to_thread (no asgiref)."""
 
 import asyncio
+import collections
 import warnings
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from typing import Self
 
 from ._engine import DurableStream, Store
 from .errors import DurastreamError
 
+_LAG_LIMIT = 10_000  # records a subscriber may fall behind live before reading disk
+
+
+class _Sub:
+    """One async subscriber's view of the live tail, fed by its stream's _Hub."""
+
+    __slots__ = ("buf", "event", "stale", "start")
+
+    def __init__(self) -> None:
+        self.buf: collections.deque[bytes] = collections.deque()
+        self.start = 0  # offset of buf[0], or of the next live record when empty
+        self.stale = True  # buf can't be trusted: read from disk first
+        self.event = asyncio.Event()
+
+    def deliver(self, start: int, records: list[bytes]) -> None:
+        if records and not self.stale:
+            end = self.start + len(self.buf)
+            if start > end:
+                self.stale = True  # missed records: catch up from disk
+            elif start + len(records) > end:
+                self.buf.extend(records[end - start :])
+                if len(self.buf) > _LAG_LIMIT:
+                    self.stale = True  # too far behind live: fall back to disk
+        if self.stale:
+            self.buf.clear()
+        self.event.set()
+
+
+class _Hub:
+    """Fans out one stream's appended records to all its async subscribers.
+
+    One engine listener per stream and one call_soon_threadsafe per append, however
+    many subscribers; records reach them without a disk read. Listeners only fire
+    after the fsync, so subscribers still only ever see durable records.
+    """
+
+    def __init__(self, stream: DurableStream) -> None:
+        self.stream = stream
+        self._subs: set[_Sub] = set()
+        self._lid: int | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def join(self) -> _Sub:
+        loop = asyncio.get_running_loop()
+        if self._lid is None:
+            self._loop = loop
+            self._lid = self.stream.add_listener(self._on_change)
+        elif loop is not self._loop:
+            raise RuntimeError("a stream's async subscribers must share one event loop")
+        sub = _Sub()
+        self._subs.add(sub)
+        return sub
+
+    def leave(self, sub: _Sub) -> None:
+        self._subs.discard(sub)
+        if not self._subs and self._lid is not None:
+            self.stream.remove_listener(self._lid)
+            self._lid = self._loop = None
+
+    def _on_change(self, start: int, records: list[bytes]) -> None:  # writer thread
+        loop = self._loop
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(self._deliver, start, records)
+            except RuntimeError:
+                pass  # loop already closed
+
+    def _deliver(self, start: int, records: list[bytes]) -> None:  # event loop
+        for sub in self._subs:
+            sub.deliver(start, records)
+
 
 class AsyncDurableStream:
-    def __init__(self, stream: DurableStream) -> None:
+    def __init__(self, stream: DurableStream, hub: _Hub | None = None) -> None:
         self._s = stream
+        self._hub = hub or _Hub(stream)
 
     @property
     def name(self) -> str:
@@ -55,31 +128,25 @@ class AsyncDurableStream:
         Wakes for appends made in this process (any thread); another process's
         writes are not visible here (see Concurrency).
         """
-        loop = asyncio.get_running_loop()
-        wake = asyncio.Event()
-
-        def notify(start: int, records: list[bytes]) -> None:  # writer's thread
-            try:
-                loop.call_soon_threadsafe(wake.set)
-            except RuntimeError:
-                pass  # loop already closed
-
-        lid = self._s.add_listener(notify)
+        sub = self._hub.join()  # stale forever: only its wake-ups are used
         try:
             while self._s.next_offset <= offset:
                 if self._s.closed:
                     return False
-                await wake.wait()
-                wake.clear()
+                sub.event.clear()
+                if self._s.next_offset <= offset and not self._s.closed:
+                    await sub.event.wait()
             return True
         finally:
-            self._s.remove_listener(lid)
+            self._hub.leave(sub)
 
     async def subscribe(
         self, offset: int = 0, poll: float | None = None
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes, None]:
         """Tail -f: yield records from `offset`, then each new one as it is
-        appended (push, not polling). Ends once the stream is closed and drained.
+        appended. Live records are handed over by the append itself (no polling,
+        no disk read); only the replay, and a subscriber that falls far behind,
+        read from disk. Ends once the stream is closed and drained.
 
         `poll` is ignored (subscribe no longer polls) and will be removed.
         """
@@ -89,13 +156,42 @@ class AsyncDurableStream:
                 DeprecationWarning,
                 stacklevel=2,
             )
-        while True:
-            batch = await self.read(offset)
-            for record in batch:
-                yield record
-            offset += len(batch)
-            if not await self.wait(offset):
-                return
+        pos = max(offset, 0)
+        sub = self._hub.join()  # before the first read: no append can slip between
+        try:
+            while True:
+                if sub.stale:  # replay / catch up from disk
+                    sub.stale = False
+                    sub.buf.clear()
+                    sub.start = self._s.next_offset  # live records from here on
+                    batch = await self.read(pos)
+                    for record in batch:
+                        yield record
+                    pos += len(batch)
+                    continue
+                while sub.buf and sub.start < pos:  # already yielded from disk
+                    sub.buf.popleft()
+                    sub.start += 1
+                if not sub.buf:
+                    sub.start = max(sub.start, pos)
+                if sub.start > pos:
+                    sub.stale = True  # hole between disk and live: read it
+                    continue
+                if sub.buf:
+                    sub.start += 1
+                    pos += 1
+                    yield sub.buf.popleft()
+                    continue
+                if self._s.closed:
+                    if pos >= self._s.next_offset:
+                        return
+                    sub.stale = True  # close overtook deliveries: finish from disk
+                    continue
+                sub.event.clear()
+                if not (sub.buf or sub.stale or self._s.closed):
+                    await sub.event.wait()
+        finally:
+            self._hub.leave(sub)
 
 
 class AsyncBatchWriter:
@@ -190,26 +286,35 @@ class AsyncBatchWriter:
 class AsyncStore:
     def __init__(self, root: str) -> None:
         self._store = Store(root)  # brief one-time blocking IO at startup
+        self._hubs: dict[str, _Hub] = {}  # one fan-out hub per stream name
 
     @property
     def root(self) -> str:
         return self._store.root
 
+    def _wrap(self, s: DurableStream) -> AsyncDurableStream:
+        hub = self._hubs.get(s.name)
+        if hub is None or (hub.stream is not s and hub.stream.closed):
+            hub = self._hubs[s.name] = _Hub(s)  # new, or deleted and recreated
+        return AsyncDurableStream(s, hub)
+
     async def create(
         self, name: str, content_type: str | None = None
     ) -> AsyncDurableStream:
-        s = await asyncio.to_thread(self._store.create, name, content_type)
-        return AsyncDurableStream(s)
+        return self._wrap(
+            await asyncio.to_thread(self._store.create, name, content_type)
+        )
 
     async def open(self, name: str) -> AsyncDurableStream:
-        s = await asyncio.to_thread(self._store.open, name)
-        return AsyncDurableStream(s)
+        return self._wrap(await asyncio.to_thread(self._store.open, name))
 
     async def delete(self, name: str) -> None:
         await asyncio.to_thread(self._store.delete, name)
+        self._hubs.pop(name, None)
 
     async def list(self) -> list[str]:
         return await asyncio.to_thread(self._store.list)
 
     async def close(self) -> None:
         await asyncio.to_thread(self._store.close)
+        self._hubs.clear()

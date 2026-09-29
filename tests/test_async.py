@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import tempfile
 import threading
 
@@ -172,3 +173,98 @@ async def test_subscribe_poll_argument_is_deprecated():
         await s.close()
         with pytest.warns(DeprecationWarning):
             assert [r async for r in s.subscribe(0, poll=0.1)] == []
+
+
+def count_disk_reads(monkeypatch) -> list[int]:
+    """Count asyncio.to_thread calls that run a stream read."""
+    calls = [0]
+    real = asyncio.to_thread
+
+    async def counting(func, *args, **kwargs):
+        if getattr(func, "__name__", "") == "read":
+            calls[0] += 1
+        return await real(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", counting)
+    return calls
+
+
+async def collect(stream, offset, n):
+    got = []
+    async with contextlib.aclosing(stream.subscribe(offset)) as records:
+        async for record in records:
+            got.append(record)
+            if len(got) == n:
+                break
+    return got
+
+
+async def test_fan_out_delivers_live_records_without_disk_reads(monkeypatch):
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = AsyncStore(root)
+        s = await store.create("t")
+        await s.append(b"backlog")
+        readers = [await store.open("t") for _ in range(5)]  # separate handles, one hub
+        tasks = [asyncio.ensure_future(collect(r, 0, 101)) for r in readers]
+        await asyncio.sleep(0.05)  # all replayed the backlog and went live
+        reads = count_disk_reads(monkeypatch)
+        for i in range(100):
+            await s.append(b"%d" % i)
+        want = [b"backlog"] + [b"%d" % i for i in range(100)]
+        for t in tasks:
+            assert await asyncio.wait_for(t, 5) == want
+        assert reads[0] == 0, f"{reads[0]} live-path disk reads"
+        assert s._hub._lid is None  # last subscriber left: engine listener removed
+
+
+async def test_subscriber_joining_mid_stream_has_no_gaps_or_duplicates():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = AsyncStore(root)
+        s = await store.create("t")
+        await s.append_many([b"%d" % i for i in range(50)])
+
+        async def writer():
+            for i in range(50, 100):
+                await s.append(b"%d" % i)
+
+        w = asyncio.ensure_future(writer())  # appends race the subscriber's replay
+        got = await asyncio.wait_for(collect(s, 10, 90), 5)
+        await w
+        assert got == [b"%d" % i for i in range(10, 100)]
+
+
+async def test_slow_subscriber_falls_back_to_disk(monkeypatch):
+    import durastream.aio
+
+    monkeypatch.setattr(durastream.aio, "_LAG_LIMIT", 5)
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = AsyncStore(root)
+        s = await store.create("t")
+        it = s.subscribe(0)
+        first = asyncio.ensure_future(anext(it))
+        await s.append(b"0")
+        assert await first == b"0"
+        await s.append_many([b"%d" % i for i in range(1, 50)])  # overflows its buffer
+        rest = [await anext(it) for _ in range(49)]
+        assert rest == [b"%d" % i for i in range(1, 50)]
+        await it.aclose()
+
+
+async def test_concurrent_writer_threads_keep_subscriber_exact():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = AsyncStore(root)
+        s = await store.create("t")
+        sync = s._s
+        task = asyncio.ensure_future(collect(s, 0, 400))
+        await asyncio.sleep(0.02)
+        threads = [
+            threading.Thread(target=lambda: [sync.append(b"x") for _ in range(100)])
+            for _ in range(4)
+        ]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        got = await asyncio.wait_for(task, 5)
+        assert len(got) == 400  # nothing lost or duplicated, whatever the order
+        assert got == await s.read(0)
