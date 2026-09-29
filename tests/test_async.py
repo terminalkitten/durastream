@@ -268,3 +268,49 @@ async def test_concurrent_writer_threads_keep_subscriber_exact():
         got = await asyncio.wait_for(task, 5)
         assert len(got) == 400  # nothing lost or duplicated, whatever the order
         assert got == await s.read(0)
+
+
+async def test_slow_subscriber_buffer_is_bounded_by_bytes(monkeypatch):
+    import durastream.aio
+
+    monkeypatch.setattr(durastream.aio, "_LAG_BYTES", 1000)
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = AsyncStore(root)
+        s = await store.create("t")
+        it = s.subscribe(0)
+        first = asyncio.ensure_future(anext(it))
+        await s.append(b"0")
+        assert await first == b"0"
+        big = [bytes([i]) * 400 for i in range(1, 11)]  # 4 KB > 1000-byte budget
+        reads = count_disk_reads(monkeypatch)
+        await s.append_many(big)
+        await asyncio.sleep(0)  # let the delivery land (and overflow)
+        assert [await anext(it) for _ in range(10)] == big
+        assert reads[0] >= 1  # the overflowed buffer was dropped: served from disk
+        await it.aclose()
+
+
+def test_new_event_loop_can_subscribe_after_one_died_mid_subscription():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = AsyncStore(root)
+
+        async def leave_open():
+            s = await store.create("t")
+            it = s.subscribe(0)
+            asyncio.ensure_future(anext(it))  # parked, never closed
+            await asyncio.sleep(0.01)
+            return it
+
+        loop = asyncio.new_event_loop()
+        leaked = loop.run_until_complete(leave_open())  # noqa: F841 - keep it open
+        loop.close()
+
+        async def subscribe_again():
+            s = await store.open("t")
+            it = s.subscribe(0)
+            nxt = asyncio.ensure_future(anext(it))
+            await asyncio.sleep(0.01)
+            await s.append(b"x")
+            return await asyncio.wait_for(nxt, 1)
+
+        assert asyncio.run(subscribe_again()) == b"x"

@@ -164,7 +164,8 @@ impl DurableStream {
     /// records it just made durable and the offset of the first one; after a
     /// close or delete, with `(next_offset, [])`. Runs in the thread that made the
     /// change, outside all locks. Keep it quick and don't panic. Returns an id for
-    /// [`remove_listener`](Self::remove_listener).
+    /// [`remove_listener`](Self::remove_listener). A change already in flight in
+    /// another thread may still call it once after `remove_listener` returns.
     pub fn add_listener(&self, f: impl Fn(u64, &[&[u8]]) + Send + Sync + 'static) -> u64 {
         let mut ls = self
             .listeners

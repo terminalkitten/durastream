@@ -9,16 +9,20 @@ from typing import Self
 from ._engine import DurableStream, Store
 from .errors import DurastreamError
 
-_LAG_LIMIT = 10_000  # records a subscriber may fall behind live before reading disk
+# How far a subscriber may fall behind live before it drops its buffer and reads
+# from disk instead: bounds memory per slow client, by count and by size.
+_LAG_LIMIT = 10_000  # records
+_LAG_BYTES = 16 * 1024 * 1024
 
 
 class _Sub:
     """One async subscriber's view of the live tail, fed by its stream's _Hub."""
 
-    __slots__ = ("buf", "event", "stale", "start")
+    __slots__ = ("buf", "event", "nbytes", "stale", "start")
 
     def __init__(self) -> None:
         self.buf: collections.deque[bytes] = collections.deque()
+        self.nbytes = 0  # total size of buf
         self.start = 0  # offset of buf[0], or of the next live record when empty
         self.stale = True  # buf can't be trusted: read from disk first
         self.event = asyncio.Event()
@@ -29,12 +33,24 @@ class _Sub:
             if start > end:
                 self.stale = True  # missed records: catch up from disk
             elif start + len(records) > end:
-                self.buf.extend(records[end - start :])
-                if len(self.buf) > _LAG_LIMIT:
+                new = records[end - start :]
+                self.buf.extend(new)
+                self.nbytes += sum(map(len, new))
+                if len(self.buf) > _LAG_LIMIT or self.nbytes > _LAG_BYTES:
                     self.stale = True  # too far behind live: fall back to disk
         if self.stale:
-            self.buf.clear()
+            self.clear()
         self.event.set()
+
+    def clear(self) -> None:
+        self.buf.clear()
+        self.nbytes = 0
+
+    def popleft(self) -> bytes:
+        record = self.buf.popleft()
+        self.nbytes -= len(record)
+        self.start += 1
+        return record
 
 
 class _Hub:
@@ -53,6 +69,11 @@ class _Hub:
 
     def join(self) -> _Sub:
         loop = asyncio.get_running_loop()
+        if self._loop is not None and self._loop.is_closed():
+            # subscribers of a loop that shut down without closing them: they can
+            # never run again, so drop them and serve this loop (keeps the listener)
+            self._subs.clear()
+            self._loop = loop
         if self._lid is None:
             self._loop = loop
             self._lid = self.stream.add_listener(self._on_change)
@@ -162,7 +183,7 @@ class AsyncDurableStream:
             while True:
                 if sub.stale:  # replay / catch up from disk
                     sub.stale = False
-                    sub.buf.clear()
+                    sub.clear()
                     sub.start = self._s.next_offset  # live records from here on
                     batch = await self.read(pos)
                     for record in batch:
@@ -170,17 +191,15 @@ class AsyncDurableStream:
                     pos += len(batch)
                     continue
                 while sub.buf and sub.start < pos:  # already yielded from disk
-                    sub.buf.popleft()
-                    sub.start += 1
+                    sub.popleft()
                 if not sub.buf:
                     sub.start = max(sub.start, pos)
                 if sub.start > pos:
                     sub.stale = True  # hole between disk and live: read it
                     continue
                 if sub.buf:
-                    sub.start += 1
                     pos += 1
-                    yield sub.buf.popleft()
+                    yield sub.popleft()
                     continue
                 if self._s.closed:
                     if pos >= self._s.next_offset:

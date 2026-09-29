@@ -142,6 +142,9 @@ class DurableStream:
         first one. After a close or delete: `(next_offset, [])`. Runs in the thread
         that made the change, outside all locks; keep it quick. Exceptions are
         printed and ignored. Returns an id for remove_listener.
+
+        A change already in flight in another thread may still call it once after
+        remove_listener returns.
         """
         with self._listeners_lock:
             lid = next(self._listener_ids)

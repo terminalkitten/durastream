@@ -34,7 +34,7 @@ One append only stream. Get one from `Store.create` or `Store.open`.
 | `next_offset` | Record count and the position the next append lands at. |
 | `closed` | Whether the stream is closed, deleted, or disabled after a failed write. |
 | `writable` | Whether this handle owns the log in this process (see [Concurrency](concurrency.md)). |
-| `add_listener(callback) -> int` | Call `callback(start, records)` after every change: after an append with the records it made durable and the offset of the first one, after a close or delete with `(next_offset, [])`. Runs in the thread that made the change, outside all locks. Keep it quick; exceptions are reported and ignored. Returns an id. |
+| `add_listener(callback) -> int` | Call `callback(start, records)` after every change: after an append with the records it made durable and the offset of the first one, after a close or delete with `(next_offset, [])`. Runs in the thread that made the change, outside all locks. Keep it quick; exceptions are reported and ignored. Returns an id. A change already in flight may still call it once after `remove_listener` returns. |
 | `remove_listener(id) -> bool` | Stop calling a listener. |
 | `content_type` | The MIME type set at creation. |
 
@@ -83,7 +83,8 @@ wake them; a read-only view of another process's stream never changes.
 one `AsyncStore`) share one listener, and each append hands its records, already
 durable, to every subscriber with a single event-loop callback. Live records cost
 no disk read and no thread hop; only the replay, and a subscriber more than 10,000
-records behind live, read from disk. Prefer `subscribe` over a `read` + `wait`
+records or 16 MiB behind live, read from disk (so a stalled client can't grow
+memory without bound). Prefer `subscribe` over a `read` + `wait`
 loop when many clients tail one stream: that loop reads from disk once per client
 per wake-up. A stream's subscribers must share one event loop.
 
