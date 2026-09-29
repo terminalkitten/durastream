@@ -3,14 +3,13 @@ import os
 import threading
 
 from .codec import iter_frames, pack_frame
+from .errors import StreamClosed
 
 # fdatasync skips the inode-metadata sync; safe for append and faster.
 # Availability: Unix, not macOS, not iOS.
 _fsync = getattr(os, "fdatasync", os.fsync)
 
-
-class StreamClosed(Exception):
-    pass
+__all__ = ["DurableStream", "StreamClosed"]
 
 
 class DurableStream:
