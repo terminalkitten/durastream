@@ -17,7 +17,9 @@ while keeping the whole system local, simple, and easy to embed.
 uv add durastream
 ```
 
-Requires Python 3.12+. No runtime dependencies.
+Requires Python 3.12+. No runtime dependencies. Linux and macOS wheels include a
+compiled Rust core for speed; everywhere else (Windows, PyPy) the same package runs in
+pure Python. The API, behaviour and on-disk format are identical either way.
 
 <p>
   <a href="#/quickstart" class="button">Quick start &rarr;</a>

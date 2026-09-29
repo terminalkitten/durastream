@@ -1,34 +1,30 @@
 [project]
 name = "durastream"
-dynamic = ["version"]
+version = "0.0.1a3" # single source of truth; release tag must be v<version>
 description = "Tiny durable streaming on local disk"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = []
 
+# Platform wheels (Linux, macOS) embed the native (Rust) engine as durastream.core.
+# A py3-none-any wheel (built with hatchling, see Makefile `build`) is the
+# pure-Python fallback for everything else (Windows, PyPy, ...).
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
 
-[tool.hatch.version]
-source = "vcs"
-raw-options = { version_scheme = "no-guess-dev", fallback_version = "0.0.0" }
+[tool.maturin]
+manifest-path = "core/Cargo.toml"
+python-source = "src"
+module-name = "durastream.core"
+features = ["python"]
 
+# pure-Python fallback wheel only
 [tool.hatch.build.targets.wheel]
 packages = ["src/durastream"]
-
-[tool.hatch.build.targets.sdist]
-include = [
-    "/.gitignore", 
-    "/.python-version", 
-    "/pyproject.toml", 
-    "/uv.lock", 
-    "/README.md", 
-    "/LICENSE",
-    "/src"
-]
-exclude = ["/tests", "/demos"]
+exclude = ["*.so", "*.pyd", "src/durastream/core.pyi"]
 
 [dependency-groups]
 dev = [
@@ -39,6 +35,10 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
 ]
+
+[tool.uv]
+# rebuild the Rust extension on `uv sync` / `uv run` when Rust sources change
+cache-keys = [{ file = "pyproject.toml" }, { file = "core/Cargo.toml" }, { file = "core/src/**/*.rs" }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
