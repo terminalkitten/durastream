@@ -90,8 +90,25 @@ stream = await store.create("chat")
 await stream.append(b"hello ")
 await stream.read(0)  # [b"hello "]
 
-async for record in stream.subscribe(0):  # replay, then tail (poll-based)
+async for record in stream.subscribe(0):  # replay, then tail (pushed, no polling)
     print(record)
+```
+
+`subscribe` gets each record the moment it is appended in this process, from any
+thread, handed over by the append itself (no polling, no disk read), so it stays
+cheap with many clients per stream. `await stream.wait(offset)` is the same
+wake-up for your own read loop (see `demos/fastapi_resume.py`). For LLM output, `AsyncBatchWriter` groups tokens
+into one fsync per 20 ms window without weakening durability: readers only ever
+see records that are already on disk.
+
+```python
+from durastream import AsyncBatchWriter
+
+async with AsyncBatchWriter(stream) as w:
+    async for token in llm_tokens():
+        w.write(token)  # returns at once
+# every token is durable here
+await stream.close()
 ```
 
 

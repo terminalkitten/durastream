@@ -34,6 +34,8 @@ One append only stream. Get one from `Store.create` or `Store.open`.
 | `next_offset` | Record count and the position the next append lands at. |
 | `closed` | Whether the stream is closed, deleted, or disabled after a failed write. |
 | `writable` | Whether this handle owns the log in this process (see [Concurrency](concurrency.md)). |
+| `add_listener(callback) -> int` | Call `callback(start, records)` after every change: after an append with the records it made durable and the offset of the first one, after a close or delete with `(next_offset, [])`. Runs in the thread that made the change, outside all locks. Keep it quick; exceptions are reported and ignored. Returns an id. A change already in flight may still call it once after `remove_listener` returns. |
+| `remove_listener(id) -> bool` | Stop calling a listener. |
 | `content_type` | The MIME type set at creation. |
 
 ## Errors
@@ -62,13 +64,53 @@ await stream.append(b"hi")
 await stream.read(0)
 await stream.close()
 
-async for record in stream.subscribe(0):  # poll-based tail
+async for record in stream.subscribe(0):  # replay, then pushed tail
     ...
 ```
 
-`AsyncDurableStream.subscribe` is poll based: it reads, yields, and sleeps rather
-than blocking on a condition, so no worker thread is parked. Latency is at most
-the poll interval.
+`subscribe` and `wait(offset)` are push based: an append wakes them directly
+(through a change listener, from whichever thread appended), so latency is about
+a millisecond and no worker thread is parked. Only appends made in this process
+wake them; a read-only view of another process's stream never changes.
+
+| Member | Description |
+|---|---|
+| `await wait(offset) -> bool` | Wait until a record past `offset` exists. `False` once the stream is closed (or deleted) with nothing past `offset`. |
+| `subscribe(offset=0)` | Async iterator: replay from `offset`, then each new record as it is appended. Ends once closed and drained. |
+| `await read(offset=0, end=None)` | Like the sync `read`; returns `[]` without a thread hop when there is nothing new. |
+
+`subscribe` scales to many clients per stream: all subscribers of a stream (on
+one `AsyncStore`) share one listener, and each append hands its records, already
+durable, to every subscriber with a single event-loop callback. Live records cost
+no disk read and no thread hop; only the replay, and a subscriber more than 10,000
+records or 16 MiB behind live, read from disk (so a stalled client can't grow
+memory without bound). Prefer `subscribe` over a `read` + `wait`
+loop when many clients tail one stream: that loop reads from disk once per client
+per wake-up. A stream's subscribers must share one event loop.
+
+### AsyncBatchWriter
+
+Groups many small appends, such as LLM tokens, into one `append_many` and one
+fsync per `window` (default 20 ms).
+
+```python
+async with AsyncBatchWriter(stream, window=0.02) as w:
+    for token in tokens:
+        w.write(token)  # buffers, returns at once
+# closed: everything written is durable
+```
+
+| Member | Description |
+|---|---|
+| `write(payload)` | Buffer one record; appended within `window` seconds. |
+| `await flush() -> int` | Append everything written so far; returns `next_offset` once it is durable. |
+| `await close()` | Flush and stop (does not close the stream). |
+
+Durability is unchanged: readers only see records already on disk, and `flush()`
+or `close()` returning means everything written so far is durable. A crash can
+only lose records still buffered, which no reader has seen. If a flush fails
+(e.g. disk full), its records stay buffered for the next flush and the error is
+raised by the next `write`, `flush` or `close`.
 
 ## Offset tokens
 

@@ -117,8 +117,9 @@ impl PyStream {
     }
 
     #[getter]
-    fn writable(&self) -> bool {
-        self.0.is_writer()
+    fn writable(&self, py: Python<'_>) -> bool {
+        // takes the stream lock, which an append holds across fsync: don't hold the GIL
+        py.detach(|| self.0.is_writer())
     }
 
     fn append(&self, py: Python<'_>, payload: PyBackedBytes) -> PyResult<u64> {
@@ -152,6 +153,28 @@ impl PyStream {
 
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         Ok(py.detach(|| self.0.close())?)
+    }
+
+    /// Call `callback(start, records)` after every change: after an append with
+    /// the durable records, after a close or delete with `(next_offset, [])`.
+    /// Runs in the writing thread. Exceptions go to `sys.unraisablehook`. Returns
+    /// an id for `remove_listener`.
+    fn add_listener(&self, callback: Py<PyAny>) -> u64 {
+        self.0.add_listener(move |start, records| {
+            // Runs in the writer's thread, which released the GIL for the I/O.
+            // try_attach: skip, rather than hang or panic, during interpreter shutdown.
+            Python::try_attach(|py| {
+                let result = PyList::new(py, records.iter().map(|r| PyBytes::new(py, r)))
+                    .and_then(|records| callback.call1(py, (start, records)));
+                if let Err(e) = result {
+                    e.write_unraisable(py, Some(callback.bind(py)));
+                }
+            });
+        })
+    }
+
+    fn remove_listener(&self, id: u64) -> bool {
+        self.0.remove_listener(id)
     }
 }
 
