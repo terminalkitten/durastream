@@ -166,15 +166,6 @@ async def test_batch_writer_keeps_order_when_a_flush_is_cancelled(monkeypatch):
         assert await s.read(0) == [b"first", b"second"]
 
 
-async def test_subscribe_poll_argument_is_deprecated():
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
-        store = AsyncStore(root)
-        s = await store.create("t")
-        await s.close()
-        with pytest.warns(DeprecationWarning):
-            assert [r async for r in s.subscribe(0, poll=0.1)] == []
-
-
 def count_disk_reads(monkeypatch) -> list[int]:
     """Count asyncio.to_thread calls that run a stream read."""
     calls = [0]

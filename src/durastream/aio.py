@@ -2,7 +2,6 @@
 
 import asyncio
 import collections
-import warnings
 from collections.abc import AsyncGenerator, Sequence
 from typing import Self
 
@@ -162,22 +161,12 @@ class AsyncDurableStream:
         finally:
             self._hub.leave(sub)
 
-    async def subscribe(
-        self, offset: int = 0, poll: float | None = None
-    ) -> AsyncGenerator[bytes, None]:
+    async def subscribe(self, offset: int = 0) -> AsyncGenerator[bytes, None]:
         """Tail -f: yield records from `offset`, then each new one as it is
         appended. Live records are handed over by the append itself (no polling,
         no disk read); only the replay, and a subscriber that falls far behind,
         read from disk. Ends once the stream is closed and drained.
-
-        `poll` is ignored (subscribe no longer polls) and will be removed.
         """
-        if poll is not None:
-            warnings.warn(
-                "subscribe(poll=...) is ignored: subscribe is push-based now",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         pos = max(offset, 0)
         sub = self._hub.join()  # before the first read: no append can slip between
         try:
