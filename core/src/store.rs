@@ -209,7 +209,7 @@ impl Store {
         })();
         drop(open);
         if let Some(s) = stream {
-            s.notify(); // outside the map lock: listeners may call back into the store
+            s.notify_closed(); // outside the map lock: listeners may call back into the store
         }
         result
     }
@@ -233,7 +233,7 @@ impl Store {
         *self.db.lock().unwrap_or_else(PoisonError::into_inner) = None;
         drop(open);
         for s in &streams {
-            s.notify(); // outside the map lock: listeners may call back into the store
+            s.notify_closed(); // outside the map lock: listeners may call back into the store
         }
     }
 }

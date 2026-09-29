@@ -133,10 +133,13 @@ fn listeners_fire_on_every_change() {
     let store = Store::new(dir.path()).unwrap();
     let s = store.create("t", None).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let id = {
-        let calls = Arc::clone(&calls);
-        s.add_listener(move || {
+        let (calls, seen) = (Arc::clone(&calls), Arc::clone(&seen));
+        s.add_listener(move |start, records| {
             calls.fetch_add(1, Ordering::SeqCst);
+            let records: Vec<Vec<u8>> = records.iter().map(|r| r.to_vec()).collect();
+            seen.lock().unwrap().push((start, records));
         })
     };
     let writer = {
@@ -145,11 +148,20 @@ fn listeners_fire_on_every_change() {
     };
     assert_eq!(writer.join().unwrap(), 1);
     assert_eq!(s.next_offset(), 1);
+    assert_eq!(s.append_many(&[b"b", b"c"]).unwrap(), 3);
     s.close().unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 2); // append + close
+    assert_eq!(calls.load(Ordering::SeqCst), 3); // append, append_many, close
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            (0, vec![b"a".to_vec()]),
+            (1, vec![b"b".to_vec(), b"c".to_vec()]),
+            (3, vec![]),
+        ]
+    );
 
     assert!(s.remove_listener(id));
     assert!(!s.remove_listener(id));
     store.delete("t").unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 2); // removed: delete not seen
+    assert_eq!(calls.load(Ordering::SeqCst), 3); // removed: delete not seen
 }

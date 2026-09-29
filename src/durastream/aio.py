@@ -2,7 +2,7 @@
 
 import asyncio
 import warnings
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Self
 
 from ._engine import DurableStream, Store
@@ -33,10 +33,10 @@ class AsyncDurableStream:
     def writable(self) -> bool:
         return self._s.writable
 
-    async def append(self, payload: bytes) -> int:
+    async def append(self, payload: bytes | bytearray) -> int:
         return await asyncio.to_thread(self._s.append, payload)
 
-    async def append_many(self, payloads: list[bytes]) -> int:
+    async def append_many(self, payloads: Sequence[bytes | bytearray]) -> int:
         return await asyncio.to_thread(self._s.append_many, payloads)
 
     async def read(self, offset: int = 0, end: int | None = None) -> list[bytes]:
@@ -58,7 +58,7 @@ class AsyncDurableStream:
         loop = asyncio.get_running_loop()
         wake = asyncio.Event()
 
-        def notify() -> None:  # runs in the writer's thread
+        def notify(start: int, records: list[bytes]) -> None:  # writer's thread
             try:
                 loop.call_soon_threadsafe(wake.set)
             except RuntimeError:

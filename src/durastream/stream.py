@@ -4,7 +4,7 @@ import os
 import threading
 import traceback
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import BinaryIO
 
 from .codec import HEADER, HEADER_SIZE, iter_frames, pack_frame
@@ -88,7 +88,7 @@ class DurableStream:
         self._closed = closed
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
-        self._listeners: dict[int, Callable[[], object]] = {}
+        self._listeners: dict[int, Callable[[int, list[bytes]], object]] = {}
         self._listener_ids = itertools.count(1)
         self._listeners_lock = threading.Lock()
         # One unbuffered handle for everything: a failed write must not linger in
@@ -135,12 +135,13 @@ class DurableStream:
         """True when this handle holds the log's lock in this process (can append)."""
         return self._owner and self._pid == os.getpid()
 
-    def add_listener(self, callback: Callable[[], object]) -> int:
-        """Call `callback()` after every change (append, close, delete).
+    def add_listener(self, callback: Callable[[int, list[bytes]], object]) -> int:
+        """Call `callback(start, records)` after every change.
 
-        Runs in the thread that made the change, outside all locks, possibly
-        spuriously; keep it quick. Exceptions are printed and ignored. Returns an
-        id for remove_listener.
+        After an append: the records it just made durable and the offset of the
+        first one. After a close or delete: `(next_offset, [])`. Runs in the thread
+        that made the change, outside all locks; keep it quick. Exceptions are
+        printed and ignored. Returns an id for remove_listener.
         """
         with self._listeners_lock:
             lid = next(self._listener_ids)
@@ -152,27 +153,35 @@ class DurableStream:
         with self._listeners_lock:
             return self._listeners.pop(lid, None) is not None
 
-    def _notify(self) -> None:
+    def _notify(self, start: int, records: list[bytes]) -> None:
         with self._listeners_lock:  # snapshot: listeners may (un)register
             callbacks = list(self._listeners.values())
         for callback in callbacks:
             try:
-                callback()
+                callback(start, records)
             except Exception:  # noqa: BLE001 - a listener must never fail a durable append
                 traceback.print_exc()
 
-    def append(self, payload: bytes) -> int:
+    def _notify_closed(self) -> None:
+        self._notify(self.next_offset, [])
+
+    def append(self, payload: bytes | bytearray) -> int:
         """Frame + fsync one record. Returns the new next_offset."""
         return self.append_many([payload])
 
-    def append_many(self, payloads: list[bytes]) -> int:
+    def append_many(self, payloads: Sequence[bytes | bytearray]) -> int:
         """Frame + fsync a batch of records in one flush. Returns new next_offset."""
+        records = [p if type(p) is bytes else bytes(p) for p in payloads]
         try:
-            return self._append_locked(payloads)
-        finally:
-            self._notify()  # after the lock is released
+            end = self._append_locked(records)
+        except BaseException:
+            self._notify(self.next_offset, [])  # e.g. disabled after a failed write
+            raise
+        if records:  # after the lock is released, with exactly the records now durable
+            self._notify(end - len(records), records)
+        return end
 
-    def _append_locked(self, payloads: list[bytes]) -> int:
+    def _append_locked(self, payloads: Sequence[bytes]) -> int:
         frames = [pack_frame(p) for p in payloads]  # outside the lock
         with self._cond:
             if self._closed:
@@ -261,11 +270,11 @@ class DurableStream:
                 self._closed = True
                 self._cond.notify_all()
         finally:
-            self._notify()
+            self._notify(self.next_offset, [])
 
     def _close_fds(self) -> None:
         """Release the file handle (and the lock) on delete / store close; wakes
-        blocked subscribers. The store calls _notify() once it has released its own
+        blocked subscribers. The store calls _notify_closed() once it has released its own
         lock, so listeners never run under it."""
         with self._cond:
             if self._file is not None:

@@ -315,16 +315,18 @@ def test_listeners_fire_on_append_close_delete():
         store = Store(root)
         s = store.create("t")
         seen = []
-        lid = s.add_listener(lambda: seen.append(s.next_offset))
+        lid = s.add_listener(lambda start, records: seen.append((start, records)))
         th = threading.Thread(target=s.append, args=(b"a",))  # any thread
         th.start()
         th.join()
-        s.append_many([b"b", b"c"])
+        s.append_many([b"b", bytearray(b"c")])
         s.close()
-        assert seen == [1, 3, 3]  # append, append_many, close
+        # the records each append made durable, then (next_offset, []) on close
+        assert seen == [(0, [b"a"]), (1, [b"b", b"c"]), (3, [])]
+        assert all(type(r) is bytes for _, recs in seen for r in recs)
         assert s.remove_listener(lid) and not s.remove_listener(lid)
         store.delete("t")
-        assert seen == [1, 3, 3]
+        assert len(seen) == 3
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
@@ -332,7 +334,7 @@ def test_failing_listener_does_not_break_append(capsys):
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         s = Store(root).create("t")
 
-        def boom():
+        def boom(start, records):
             raise RuntimeError("listener bug")
 
         s.add_listener(boom)
@@ -346,7 +348,7 @@ def test_listener_may_call_back_into_the_store_on_delete():
         s = store.create("t")
         seen = []
         # create() takes the store's own lock, which delete holds while closing
-        s.add_listener(lambda: seen.append(store.create("other").name))
+        s.add_listener(lambda *_: seen.append(store.create("other").name))
         th = threading.Thread(target=store.delete, args=("t",))
         th.start()
         th.join(timeout=2)

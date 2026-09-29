@@ -29,7 +29,7 @@ pub struct DurableStream {
     listeners: Mutex<Listeners>,
 }
 
-type Listener = Arc<dyn Fn() + Send + Sync>;
+type Listener = Arc<dyn Fn(u64, &[&[u8]]) + Send + Sync>;
 
 #[derive(Default)]
 struct Listeners {
@@ -160,10 +160,12 @@ impl DurableStream {
         self.next.load(Ordering::Acquire)
     }
 
-    /// Run `f` after every change (append, close, delete): from the thread that
-    /// made it, outside all locks, possibly spuriously. Keep it quick and don't
-    /// panic. Returns an id for [`remove_listener`](Self::remove_listener).
-    pub fn add_listener(&self, f: impl Fn() + Send + Sync + 'static) -> u64 {
+    /// Run `f(start, records)` after every change: after an append, with the
+    /// records it just made durable and the offset of the first one; after a
+    /// close or delete, with `(next_offset, [])`. Runs in the thread that made the
+    /// change, outside all locks. Keep it quick and don't panic. Returns an id for
+    /// [`remove_listener`](Self::remove_listener).
+    pub fn add_listener(&self, f: impl Fn(u64, &[&[u8]]) + Send + Sync + 'static) -> u64 {
         let mut ls = self
             .listeners
             .lock()
@@ -186,7 +188,7 @@ impl DurableStream {
     }
 
     /// Run the listeners. Callers must hold no lock (a listener may call back in).
-    pub(crate) fn notify(&self) {
+    fn notify<P: AsRef<[u8]>>(&self, start: u64, records: &[P]) {
         // snapshot, so a listener may add/remove listeners without deadlocking
         let ls: Vec<Listener> = self
             .listeners
@@ -196,9 +198,18 @@ impl DurableStream {
             .iter()
             .map(|(_, f)| Arc::clone(f))
             .collect();
-        for f in ls {
-            f();
+        if ls.is_empty() {
+            return;
         }
+        let records: Vec<&[u8]> = records.iter().map(AsRef::as_ref).collect();
+        for f in ls {
+            f(start, &records);
+        }
+    }
+
+    /// Tell listeners the stream closed (or was deleted).
+    pub(crate) fn notify_closed(&self) {
+        self.notify::<&[u8]>(self.next_offset(), &[]);
     }
 
     /// True once closed, deleted, or disabled after a failed write.
@@ -219,7 +230,14 @@ impl DurableStream {
     /// Frame + fsync a batch of records in one flush. Returns the new next_offset.
     pub fn append_many<P: AsRef<[u8]>>(&self, payloads: &[P]) -> Result<u64> {
         let result = self.append_locked(payloads);
-        self.notify(); // after the lock is released
+        // after the lock is released, with exactly the records now durable
+        match &result {
+            Ok(next) if !payloads.is_empty() => {
+                self.notify(next - payloads.len() as u64, payloads);
+            }
+            Ok(_) => {}
+            Err(_) => self.notify_closed(), // e.g. disabled after a failed write
+        }
         result
     }
 
@@ -372,7 +390,7 @@ impl DurableStream {
     /// Mark the stream closed (persisted). Reads still work.
     pub fn close(&self) -> Result<()> {
         let result = self.close_locked();
-        self.notify();
+        self.notify_closed();
         result
     }
 
@@ -391,8 +409,8 @@ impl DurableStream {
     }
 
     /// Release the file handle (and the lock) on delete / store close; wakes
-    /// blocked subscribers. The store runs `notify` once it has released its own
-    /// lock, so listeners never run under it.
+    /// blocked subscribers. The store runs `notify_closed` once it has released
+    /// its own lock, so listeners never run under it.
     pub(crate) fn close_fds(&self) {
         let mut st = self.lock();
         st.file = None;

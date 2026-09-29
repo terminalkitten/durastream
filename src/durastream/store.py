@@ -197,7 +197,7 @@ class Store:
                 self._meta.execute("DELETE FROM streams WHERE name=?", (name,))
         finally:
             if s is not None:
-                s._notify()  # outside the store lock: listeners may call back into it
+                s._notify_closed()  # outside the store lock: listeners may call back
 
     def list(self) -> list[str]:
         """Stream names, sorted."""
@@ -214,7 +214,7 @@ class Store:
                 s._close_fds()
             self._meta.close()
         for s in streams:
-            s._notify()  # outside the store lock: listeners may call back into it
+            s._notify_closed()  # outside the store lock: listeners may call back
 
 
 def _check_type(name: str, existing: str, given: str | None) -> None:
