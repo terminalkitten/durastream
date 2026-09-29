@@ -3,6 +3,8 @@ import tempfile
 import threading
 import time
 
+import pytest
+
 from durastream import Store, StreamClosed, from_token, to_token
 
 
@@ -161,3 +163,12 @@ def test_concurrent_create_list():
         for t in threads:
             t.join()
         assert len(store.list()) == n
+
+
+def test_names_are_lowercase():
+    with tempfile.TemporaryDirectory() as root:
+        store = Store(root)
+        for bad in ["Orders", "", "a/b", "a b", "a\n"]:
+            with pytest.raises(ValueError):
+                store.create(bad)
+        store.create("orders.v2_x-1")
