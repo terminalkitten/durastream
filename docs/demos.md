@@ -120,13 +120,14 @@ refresh replays the transcript and continues.
 ```python
 async def sse(key, offset):
     s = await store.open(key)
-    while True:
-        for i, rec in enumerate(await s.read(offset)):
-            yield f"id: {to_token(offset + i)}\ndata: {rec.decode()}\n\n"
-        offset = s.next_offset
-        if s.closed:
-            return
-        await asyncio.sleep(0.05)
+    async for rec in s.subscribe(offset):  # replay from offset, then pushed live
+        yield f"id: {to_token(offset)}\ndata: {rec.decode()}\n\n"
+        offset += 1
+    # subscribe ends once the stream is closed and every record was sent
 ```
+
+On reconnect the client sends its last `id`, and the server resumes at the next
+offset (`from_token(last_id, s.next_offset) + 1`). `subscribe` gets each token the
+moment it is appended, with no polling.
 
 `make demo-serve`
