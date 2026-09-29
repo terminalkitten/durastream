@@ -1,6 +1,7 @@
 """Async wrappers over the sync engine, via asyncio.to_thread (no asgiref)."""
 
 import asyncio
+import warnings
 from collections.abc import AsyncIterator
 
 from ._engine import DurableStream, Store
@@ -37,23 +38,62 @@ class AsyncDurableStream:
         return await asyncio.to_thread(self._s.append_many, payloads)
 
     async def read(self, offset: int = 0, end: int | None = None) -> list[bytes]:
+        start = max(offset, 0)
+        if start >= self._s.next_offset or (end is not None and end <= start):
+            return []  # nothing new: skip the thread hop (next_offset is lock-free)
         return await asyncio.to_thread(self._s.read, offset, end)
 
     async def close(self) -> None:
         await asyncio.to_thread(self._s.close)
 
+    async def wait(self, offset: int) -> bool:
+        """Wait until a record past `offset` exists, woken by the append itself
+        (no polling). False once the stream is closed with nothing past `offset`.
+
+        Wakes for appends made in this process (any thread); another process's
+        writes are not visible here (see Concurrency).
+        """
+        loop = asyncio.get_running_loop()
+        wake = asyncio.Event()
+
+        def notify() -> None:  # runs in the writer's thread
+            try:
+                loop.call_soon_threadsafe(wake.set)
+            except RuntimeError:
+                pass  # loop already closed
+
+        lid = self._s.add_listener(notify)
+        try:
+            while self._s.next_offset <= offset:
+                if self._s.closed:
+                    return False
+                await wake.wait()
+                wake.clear()
+            return True
+        finally:
+            self._s.remove_listener(lid)
+
     async def subscribe(
-        self, offset: int = 0, poll: float = 0.05
+        self, offset: int = 0, poll: float | None = None
     ) -> AsyncIterator[bytes]:
-        """Tail -f, poll-based; latency <= poll."""
+        """Tail -f: yield records from `offset`, then each new one as it is
+        appended (push, not polling). Ends once the stream is closed and drained.
+
+        `poll` is ignored (subscribe no longer polls) and will be removed.
+        """
+        if poll is not None:
+            warnings.warn(
+                "subscribe(poll=...) is ignored: subscribe is push-based now",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         while True:
             batch = await self.read(offset)
             for record in batch:
                 yield record
             offset += len(batch)
-            if self.closed and offset >= self.next_offset:
+            if not await self.wait(offset):
                 return
-            await asyncio.sleep(poll)
 
 
 class AsyncStore:

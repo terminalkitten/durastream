@@ -47,7 +47,7 @@ async def sse_stream(key: str, offset_token: str) -> AsyncIterator[bytes]:
             return
         ctl = json.dumps({"streamNextOffset": to_token(offset)})
         yield f"event: control\ndata: {ctl}\n\n".encode()
-        await asyncio.sleep(0.05)
+        await s.wait(offset)  # woken by the next append (or close), no polling
 
 
 @app.post("/chat/{chat_id}")
