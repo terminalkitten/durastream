@@ -34,7 +34,7 @@ One append only stream. Get one from `Store.create` or `Store.open`.
 | `next_offset` | Record count and the position the next append lands at. |
 | `closed` | Whether the stream is closed, deleted, or disabled after a failed write. |
 | `writable` | Whether this handle owns the log in this process (see [Concurrency](concurrency.md)). |
-| `add_listener(callback) -> int` | Call `callback()` after every append, close or delete, from the thread that made the change, outside all locks. Keep it quick; exceptions are reported and ignored. Returns an id. |
+| `add_listener(callback) -> int` | Call `callback(start, records)` after every change: after an append with the records it made durable and the offset of the first one, after a close or delete with `(next_offset, [])`. Runs in the thread that made the change, outside all locks. Keep it quick; exceptions are reported and ignored. Returns an id. |
 | `remove_listener(id) -> bool` | Stop calling a listener. |
 | `content_type` | The MIME type set at creation. |
 
@@ -79,9 +79,13 @@ wake them; a read-only view of another process's stream never changes.
 | `subscribe(offset=0)` | Async iterator: replay from `offset`, then each new record as it is appended. Ends once closed and drained. |
 | `await read(offset=0, end=None)` | Like the sync `read`; returns `[]` without a thread hop when there is nothing new. |
 
-Each woken subscriber reads through `asyncio.to_thread`, so with hundreds of
-clients per stream every record costs one thread hop per client; batching the
-writer (below) cuts those wake-ups.
+`subscribe` scales to many clients per stream: all subscribers of a stream (on
+one `AsyncStore`) share one listener, and each append hands its records, already
+durable, to every subscriber with a single event-loop callback. Live records cost
+no disk read and no thread hop; only the replay, and a subscriber more than 10,000
+records behind live, read from disk. Prefer `subscribe` over a `read` + `wait`
+loop when many clients tail one stream: that loop reads from disk once per client
+per wake-up. A stream's subscribers must share one event loop.
 
 ### AsyncBatchWriter
 

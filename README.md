@@ -94,9 +94,10 @@ async for record in stream.subscribe(0):  # replay, then tail (pushed, no pollin
     print(record)
 ```
 
-`subscribe` wakes the moment a record is appended in this process, from any
-thread; `await stream.wait(offset)` is the same wake-up for your own read loop
-(see `demos/fastapi_resume.py`). For LLM output, `AsyncBatchWriter` groups tokens
+`subscribe` gets each record the moment it is appended in this process, from any
+thread, handed over by the append itself (no polling, no disk read), so it stays
+cheap with many clients per stream. `await stream.wait(offset)` is the same
+wake-up for your own read loop (see `demos/fastapi_resume.py`). For LLM output, `AsyncBatchWriter` groups tokens
 into one fsync per 20 ms window without weakening durability: readers only ever
 see records that are already on disk.
 
