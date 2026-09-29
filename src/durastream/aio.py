@@ -3,8 +3,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 
-from .store import Store
-from .stream import DurableStream
+from ._engine import DurableStream, Store
 
 
 class AsyncDurableStream:
