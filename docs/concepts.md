@@ -42,8 +42,8 @@ A stream is a single `.log` file plus an in memory index.
 - **Batch** many records into one `append_many`, which pays a single `fsync` for
   the whole group.
 - On **open** we scan the log, rebuild the index, and if the tail is torn or
-  corrupt we truncate it back to the last good record so future appends stay
-  contiguous. The scan uses `mmap`, so a large log is not read fully into memory.
+  corrupt the writer truncates it back to the last good record so future
+  appends stay contiguous (read-only handles leave the file alone). The scan reads the log sequentially, so a large log is not held in memory.
 
 ## The store: metadata and open streams
 
@@ -75,4 +75,4 @@ data/
     orders.log            append-only frames: [u32 len][u32 crc32][payload]...
 ```
 
-CRC is `zlib.crc32` (CRC-32/ISO-HDLC).
+CRC is CRC-32/ISO-HDLC (the same as `zlib.crc32`).
