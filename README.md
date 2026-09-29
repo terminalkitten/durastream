@@ -44,7 +44,7 @@ corrupt tail record is dropped, the intact prefix survives.
 ```python
 store2 = Store("./data")
 stream = store2.open("orders")
-stream.read(0)  # [b"order-1", b"order-2"]  recovered from the log
+stream.read(0)  # [b"order-1", b"order-2", b"o-3", b"o-4"]  recovered from the log
 ```
 
 ## Tailing (`tail -f`)
@@ -65,7 +65,7 @@ threading.Thread(target=worker, daemon=True).start()
 stream.append(b"live-1")
 ```
 
-The generator returns once the stream is closed and the consumer has caught up.
+The iterator ends once the stream is closed and the consumer has caught up.
 
 ## Async
 
@@ -141,6 +141,11 @@ store.delete("orders")  # removes the log file + metadata row
 store.list()  # ["other-stream", ...]
 ```
 
+Stream names are lowercase letters, digits, `.`, `_` and `-` (so two names can never
+share a file on a case-insensitive disk). All errors derive from `DurastreamError`:
+`StreamClosed`, `StreamLocked` (another process owns the stream) and `CorruptStream`
+(bytes on disk fail their checksum).
+
 ## Offsets
 
 Offset = logical record index (0-based). `next_offset` is the record count and the
@@ -164,8 +169,8 @@ data/
     orders.log            append-only frames: [u32 len][u32 crc32][payload]...
 ```
 
-CRC is `zlib.crc32` (CRC-32/ISO-HDLC). One writer
-per stream is serialized by an in-process lock; SQLite runs in WAL mode.
+CRC is CRC-32/ISO-HDLC (the same as `zlib.crc32`). Writes to a stream are
+serialized by an in-process lock; SQLite runs in WAL mode.
 
 ## Concurrency
 
@@ -175,10 +180,14 @@ shared stream are all coordinated by a per-stream lock, so offsets stay
 consistent and no data is lost (see `make demo-concurrent`). Use `AsyncStore`
 from async code.
 
-Across **separate processes** the rule is **one writer per stream**. The lock is
-an in-memory `threading.Lock`, so it cannot coordinate two processes: if two
-processes write the same stream they each keep their own offset index and the
-offsets diverge silently. Route each stream to a single owning process. Concurrent readers in other processes are fine; they re-open to pick up new records.
+Across **separate processes** the rule is **one writer per stream**, and it is
+enforced: the first process to open a stream takes an OS file lock (`flock`) on its
+log. Other processes get a read-only view (`stream.writable` is `False`): reads
+work, `append`/`close`/`delete` raise `StreamLocked`, and they never touch the
+file. A read-only view is a snapshot; open it again from a new `Store` to see new
+records. The lock is released when the writer closes the store or exits (even on a
+crash). A forked child never writes through its parent's streams; open stores after
+forking. On Windows there is no `flock`, so the rule is not enforced there.
 
 ## Develop
 
