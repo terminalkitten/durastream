@@ -6,8 +6,9 @@ import warnings
 from collections.abc import AsyncGenerator, Sequence
 from typing import Self
 
-from ._engine import DurableStream, Store
 from .errors import DurastreamError
+from .store import Store
+from .stream import DurableStream
 
 # How far a subscriber may fall behind live before it drops its buffer and reads
 # from disk instead: bounds memory per slow client, by count and by size.

@@ -1,6 +1,6 @@
 # Release durastream: bump `version` in pyproject.toml, then push tag v<version>.
-# Publishes Rust wheels (Linux, macOS), an sdist, and a pure-Python
-# py3-none-any fallback wheel that installers pick on every other platform.
+# Builds the wheel and sdist, tests the wheel on Linux, macOS and Windows, then
+# publishes to PyPI.
 name: release
 
 on:
@@ -8,7 +8,7 @@ on:
     tags: ["v*"]
 
 jobs:
-  check-version:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,110 +17,38 @@ jobs:
           v=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
           echo "tag=$GITHUB_REF_NAME pyproject=$v"
           test "$GITHUB_REF_NAME" = "v$v"
-
-  linux:
-    needs: check-version
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [x86_64, aarch64]
-        manylinux: [auto, musllinux_1_2]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux }}
-          args: --release --manifest-path core/Cargo.toml --out dist
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-linux-${{ matrix.target }}-${{ matrix.manylinux }}
-          path: dist
-
-  macos:
-    needs: check-version
-    runs-on: macos-latest
-    strategy:
-      matrix:
-        target: [x86_64, aarch64]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --manifest-path core/Cargo.toml --out dist
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-macos-${{ matrix.target }}
-          path: dist
-
-  sdist-and-pure:
-    needs: check-version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --manifest-path core/Cargo.toml --out dist
       - uses: astral-sh/setup-uv@v6
-      - run: uvx hatchling build -t wheel -d dist # py3-none-any fallback
-      - name: fallback wheel is pure Python
-        run: |
-          ls dist/*-py3-none-any.whl
-          ! unzip -l dist/*-py3-none-any.whl | grep -E '\.(so|pyd)$'
+      - run: uv build --out-dir dist
       - uses: actions/upload-artifact@v4
         with:
-          name: sdist-and-pure
+          name: dist
           path: dist
 
-  # install the built artifacts (not the source tree) and run the test suite
-  test-wheels:
-    needs: [linux, macos, sdist-and-pure]
+  # install the built wheel (not the source tree) and run the test suite
+  test-wheel:
+    needs: build
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: ubuntu-latest, engine: native } # manylinux x86_64
-          - { os: ubuntu-24.04-arm, engine: native } # manylinux aarch64
-          - { os: ubuntu-latest, engine: native, image: "python:3.12-alpine" } # musllinux x86_64
-          - { os: ubuntu-24.04-arm, engine: native, image: "python:3.12-alpine" } # musllinux aarch64
-          - { os: macos-latest, engine: native } # macOS arm64
-          - { os: macos-15-intel, engine: native } # macOS x86_64
-          - { os: ubuntu-latest, engine: python } # py3-none-any fallback
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    env:
-      # native: let the resolver pick from everything we publish, like pip would
-      PKG: ${{ matrix.engine == 'native' && '--no-index --find-links dist durastream' || 'dist/*-py3-none-any.whl' }}
-      CHECK: import durastream as d; assert d.ENGINE == '${{ matrix.engine }}', d.ENGINE
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4 # for tests/
       - uses: actions/download-artifact@v4
         with:
+          name: dist
           path: dist
-          merge-multiple: true
-
-      - if: ${{ !matrix.image }}
-        uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-      - if: ${{ !matrix.image }}
-        run: |
-          uv venv && uv pip install pytest pytest-asyncio && uv pip install $PKG
-          .venv/bin/python -c "$CHECK"
-          .venv/bin/python -m pytest -q tests
-
-      # musl: plain docker run (JS actions can't run inside Alpine on arm64)
-      - if: ${{ matrix.image }}
-        run: |
-          docker run --rm -v "$PWD:/w" -w /w -e PKG -e CHECK ${{ matrix.image }} sh -euc '
-            pip install -q --root-user-action=ignore pytest pytest-asyncio
-            pip install -q --root-user-action=ignore $PKG
-            python -c "$CHECK"
-            python -m pytest -q tests'
+      - run: uv venv && uv pip install pytest pytest-asyncio dist/*.whl
+      - run: uv run --no-project -p .venv python -m pytest -q tests
 
   publish:
-    needs: [test-wheels]
+    needs: test-wheel
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -128,6 +56,6 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          name: dist
           path: dist
-          merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1

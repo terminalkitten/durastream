@@ -6,9 +6,7 @@
 uv add durastream
 ```
 
-Requires Python 3.12+. No runtime dependencies. Linux and macOS wheels include a
-compiled Rust core for speed; everywhere else (Windows, PyPy) the same package runs in
-pure Python. The API, behaviour and on-disk format are identical either way.
+Requires Python 3.12+. No runtime dependencies: pure Python, stdlib only.
 
 ## Write and read
 

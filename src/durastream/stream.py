@@ -26,11 +26,7 @@ _LOCK_UNSUPPORTED = {errno.ENOLCK, errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS
 
 
 def _try_lock(f: BinaryIO) -> bool:
-    """Take the log's exclusive flock. False: another handle owns it.
-
-    Same lock as the native engine (std's File::try_lock is flock), so the two
-    engines coordinate on one store.
-    """
+    """Take the log's exclusive flock. False: another handle owns it."""
     if fcntl is None:
         return True
     try:

@@ -8,6 +8,3 @@ wheels/
 
 # Virtual environments
 .venv
-
-# Rust extension built in place by maturin develop / uv sync
-*.so

@@ -1,6 +1,4 @@
-.PHONY: full check lint format typecheck test test-rust test-native test-pure test-diskfull bench bench-duplex build demo demo-bench demo-restart demo-queue demo-ledger demo-concurrent demo-serve present-preview present-build
-
-CORE := --manifest-path core/Cargo.toml
+.PHONY: full check lint format typecheck test test-diskfull bench build demo demo-bench demo-restart demo-queue demo-ledger demo-concurrent demo-serve present-preview present-build
 
 # everything, in order: fix formatting, lint + test, benchmark, build dist/
 full:
@@ -12,54 +10,33 @@ full:
 # everything CI checks
 check: lint test
 
-# check only, no edits: Python + Rust
+# check only, no edits
 lint: typecheck
 	uv run ruff check .
 	uv run ruff format --check .
-	cargo fmt $(CORE) --check
-	cargo clippy $(CORE) --all-targets --features python -- -D warnings
 
-# apply fixes: Python + Rust
+# apply fixes
 format:
 	uv run ruff check --fix .
 	uv run ruff format .
-	cargo fmt $(CORE)
 
 typecheck:
 	uv run ty check
 
-test: test-rust test-native test-pure
-
-test-rust:
-	cargo test $(CORE)
-
-# pytest per engine; each first asserts the engine really loaded, so a broken
-# native build can't silently fall back and pass as pure Python.
-# uv run rebuilds the extension when Rust sources change.
-test-native:
-	uv run python -c "import durastream as d; assert d.ENGINE == 'native', d.ENGINE"
+test:
 	uv run pytest -q
-
-test-pure:
-	DURASTREAM_PURE=1 uv run python -c "import durastream as d; assert d.ENGINE == 'python', d.ENGINE"
-	DURASTREAM_PURE=1 uv run pytest -q
 
 # disk-full rollback against a real ENOSPC (tiny tmpfs, in Docker)
 test-diskfull:
 	scripts/test-diskfull.sh
 
+# LLM -> durastream -> SSE workload: token latency, CPU, resume
 bench:
-	uv run python scripts/bench.py
-
-# LLM -> durastream -> SSE workload: token latency, CPU, resume, per engine
-bench-duplex:
 	uv run python scripts/bench_duplex.py
 
-# into dist/: Rust wheel (this platform only), sdist, pure-Python fallback wheel
+# wheel + sdist into dist/
 build:
-	uvx maturin build --release $(CORE) --out dist
-	uvx maturin sdist $(CORE) --out dist
-	uvx hatchling build -t wheel -d dist
+	uv build --out-dir dist
 
 demo:
 	uv run python demos/bulk_stream.py

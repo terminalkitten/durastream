@@ -5,7 +5,7 @@
 # dura.stream
 
 Minimal durable streaming on local disk. Append-only, crash-safe, tailable streams
-you import into any Python app, no server, no runtime dependencies.
+you import into any Python app, no server, no dependencies: stdlib only.
 
 ## Install
 
@@ -13,17 +13,7 @@ you import into any Python app, no server, no runtime dependencies.
 uv add durastream
 ```
 
-Requires Python 3.12+. No runtime dependencies. Linux and macOS wheels include a
-compiled Rust core for speed; everywhere else (Windows, PyPy) the same package runs in
-pure Python. The API, behaviour and on-disk format are identical either way.
-
-```python
-import durastream
-
-durastream.ENGINE  # "native" (Rust core) or "python"
-```
-
-Set `DURASTREAM_PURE=1` to force the pure-Python engine.
+Requires Python 3.12+. No runtime dependencies: pure Python, stdlib only.
 
 ## Quick start
 
@@ -122,7 +112,7 @@ survived a restart:
 make demo
 ```
 
-Output (numbers vary by machine and engine):
+Output (numbers vary by machine):
 
 ```
 ingesting 100,000 readings in batches of 1,000 ...
@@ -220,23 +210,20 @@ forking. On Windows there is no `flock`, so the rule is not enforced there.
 
 ## Develop
 
-You need [uv](https://docs.astral.sh/uv/) and a Rust toolchain ([rustup](https://rustup.rs)).
+You need [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone git@github.com:terminalkitten/durastream.git && cd durastream
-uv sync          # .venv + dev deps, compiles the Rust core (release mode)
+uv sync          # .venv + dev deps
 ```
-
-`uv run` / `uv sync` recompile the Rust core automatically when anything under `core/`
-changes, so there is no separate build step while developing.
 
 Layout:
 
 ```
-src/durastream/   Python API + pure-Python engine; _engine.py picks the engine at import
-core/             Rust core + PyO3 bindings, compiled to durastream/core.abi3.so
-tests/            one test suite, run against both engines
-scripts/bench.py  pure Python vs native benchmark
+src/durastream/          the package: storage engine, async API, fan-out hub
+tests/                   test suite
+scripts/bench_duplex.py  LLM -> stream -> SSE clients benchmark
+demos/                   runnable examples (make demo, make demo-serve, ...)
 ```
 
 ### Everyday commands
@@ -248,14 +235,10 @@ make full        # format, check, bench, build, in that order (edits files!)
 
 ### Test
 
-Both engines must pass the same `tests/`; a behaviour difference is a bug.
-
 ```bash
-make test         # all three below
-make test-rust    # cargo test (core/tests)
-make test-native  # pytest on the Rust core; fails if it didn't load
-make test-pure    # pytest on the pure-Python engine (DURASTREAM_PURE=1)
-make test-diskfull  # disk-full rollback on both engines, real ENOSPC (needs Docker)
+make test           # pytest
+make test-diskfull  # disk-full rollback against a real ENOSPC (needs Docker)
+uv run pytest -q tests/test_sync.py::test_tail   # a single test
 ```
 
 `tests/test_disk_full.py` fills a tiny file system so an append is half-written
@@ -263,78 +246,44 @@ when the disk runs out, and checks the log rolls back to its last intact record.
 It skips unless `DURASTREAM_SMALL_FS` points at a small tmpfs; `make test-diskfull`
 provides one in Docker, and CI mounts one on its Linux runners.
 
-Run a single test, per engine:
-
-```bash
-uv run pytest -q tests/test_sync.py::test_tail
-DURASTREAM_PURE=1 uv run pytest -q tests/test_sync.py::test_tail
-```
-
 ### Lint and format
 
 ```bash
-make lint        # check only: ty, ruff check, ruff format --check, cargo fmt --check, clippy
-make format      # apply fixes: ruff --fix, ruff format, cargo fmt
+make lint        # check only: ty, ruff check, ruff format --check
+make format      # apply fixes: ruff --fix, ruff format
 make typecheck   # ty only
 ```
 
 ### Benchmark
 
 ```bash
-make bench                              # 100k records, median of 9 runs (~1 min)
-uv run python scripts/bench.py --quick  # 20k records, 3 runs
-make bench-duplex                       # LLM -> stream -> SSE clients, per engine (~1 min)
+make bench                                     # ~1 min
+uv run python scripts/bench_duplex.py --quick  # half the chats and tokens
 ```
 
-`make bench-duplex` models an LLM/SSE app: chats append tokens at 50 tok/s while
-SSE-style clients tail them (some disconnect and resume). It reports token latency
-(produced -> seen by a client), CPU per 1k tokens, event-loop lag and resume time.
+Models an LLM/SSE app: chats append tokens at 50 tok/s while SSE-style clients tail
+them, polling or pushed (`subscribe`), some disconnecting and resuming. Apple
+M-series:
 
-It first checks that both engines read each other's files, then times each case on
-both. Apple M-series:
-
-| case | python | native | speedup |
+| scenario | p50 | p99 | CPU per 1k tokens |
 |---|---|---|---|
-| `append()` x1000 (fsync each) | 37.2ms | 34.6ms | 1.1x |
-| `append()` 4 threads x500 | 41.8ms | 33.9ms | 1.2x |
-| `append_many` small x100k | 37.0ms | 10.5ms | 3.5x |
-| `append_many` 4KiB x10k | 22.2ms | 17.7ms | 1.3x |
-| `read(0)` small x100k | 28.2ms | 3.3ms | 8.6x |
-| `read(0)` 4KiB x10k | 11.9ms | 11.5ms | 1.0x |
-| `read(o, o+10)` x10k | 50.5ms | 9.9ms | 5.1x |
-| reopen + recover 100k | 62.3ms | 1.9ms | 33x |
-| `subscribe` drain 100k | 31.6ms | 4.4ms | 7.1x |
-| `subscribe` live 100k | 70.9ms | 11.2ms | 6.3x |
-
-fsync-bound work runs at disk speed on both engines. The native engine wins on per-record work.
+| 1 chat, polling (50 ms) | 25.2 ms | 51.0 ms | 928 ms |
+| 1 chat, `subscribe` | 0.5 ms | 1.8 ms | 868 ms |
+| 200 chats × 3 clients, polling | 35.3 ms | 77.1 ms | 159 ms |
+| 200 chats × 3 clients, `subscribe` | 5.4 ms | 31.5 ms | 141 ms |
+| same, `AsyncBatchWriter` | 20.4 ms | 36.8 ms | 78 ms |
 
 ### Build
 
 ```bash
-make build
-```
-
-writes to `dist/`:
-
-| file | what |
-|---|---|
-| `durastream-<v>-cp312-abi3-<platform>.whl` | Rust core included, for this machine only |
-| `durastream-<v>-py3-none-any.whl` | pure Python, the fallback for all other platforms |
-| `durastream-<v>.tar.gz` | sdist; installing it compiles the Rust core |
-
-Wheels for other platforms are built by CI on release. To try a built wheel in a clean venv:
-
-```bash
-# --no-cache: local rebuilds keep the same filename, uv would reuse a stale copy
-uv venv --clear /tmp/ds && VIRTUAL_ENV=/tmp/ds uv pip install --no-cache --no-index --find-links dist durastream
-/tmp/ds/bin/python -c "import durastream; print(durastream.ENGINE)"   # native
+make build       # wheel + sdist into dist/
 ```
 
 ### CI and release
 
-`ci.yml` runs on every push to `main` and every PR: `make lint` plus `cargo deny`,
-`make test` on Ubuntu and macOS with Python 3.12 and 3.14 (plus the disk-full test on
-Ubuntu), and the pure-Python wheel on Windows.
+`ci.yml` runs on every push to `main` and every PR: `make lint`, and the tests on
+Ubuntu, macOS and Windows with Python 3.12 and 3.14 (plus the disk-full test on
+Ubuntu).
 
 To release, bump `version` in `pyproject.toml` (the only version), commit, then:
 
@@ -342,12 +291,12 @@ To release, bump `version` in `pyproject.toml` (the only version), commit, then:
 git tag v<version> && git push origin main v<version>
 ```
 
-`release.yml` then builds:
+`release.yml` builds the wheel and sdist, installs the wheel on Linux, macOS and
+Windows and runs the test suite there, and only then publishes to PyPI via trusted
+publishing (GitHub environment `pypi`). A version can only be published once, so
+fix and bump rather than re-tag.
 
-- native wheels for Linux (glibc and musl, x86_64 and aarch64) and macOS (x86_64 and arm64);
-- the pure-Python wheel;
-- the sdist.
-
-It installs each wheel on its own platform and runs the test suite there. Only if all
-pass does it publish to PyPI via trusted publishing (GitHub environment `pypi`). A
-version can only be published once, so fix and bump rather than re-tag.
+An experimental Rust engine for durastream (same API and on-disk format, ~10x
+faster recovery and replay) was built and then set aside to keep this package pure
+Python. It lives on in
+[terminalkitten/durastream-core](https://github.com/terminalkitten/durastream-core).
