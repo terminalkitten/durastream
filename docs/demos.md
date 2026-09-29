@@ -12,9 +12,9 @@ the store is reopened from disk to prove the data survived.
 ```python
 stream = store.create("telemetry", "application/json")
 
-# producer: one fsync per batch
-for base in range(0, N, 1000):
-    stream.append_many([json.dumps(r).encode() for r in batch])
+# producer: one fsync per batch of 1,000 readings
+for base in range(0, len(readings), 1000):
+    stream.append_many([json.dumps(r).encode() for r in readings[base : base + 1000]])
 stream.close()
 
 # consumer (another thread): replay then follow live

@@ -42,10 +42,14 @@ a crash, reopening the store rebuilds state by scanning the log, a torn or
 corrupt tail record is dropped, the intact prefix survives.
 
 ```python
-store2 = Store("./data")
-stream = store2.open("orders")
+store.close()  # stop (or crash); then, on restart:
+store = Store("./data")
+stream = store.open("orders")
 stream.read(0)  # [b"order-1", b"order-2", b"o-3", b"o-4"]  recovered from the log
 ```
+
+A second `Store` on the same directory while the first is still open (in this or
+another process) gets a read-only view, see [Concurrency](#concurrency).
 
 ## Tailing (`tail -f`)
 
@@ -119,7 +123,7 @@ ingesting 100,000 readings in batches of 1,000 ...
   tailed  10,000     0.5 MB     409,514 rec/s
   ...
 ingested 100,000 readings (5.1 MB) in 0.22s  ->  447,142 rec/s, 23 MB/s
-reopened from disk: next_offset=100,000  (DS token 00000000000000100000)
+reopened from disk: next_offset=100,000  (token 00000000000000100000)
 resumed read at offset 50,000: [b'{"id": 50000, ...}', b'{"id": 50001, ...}']
 durable OK - data survived the restart.
 ```
@@ -128,9 +132,10 @@ durable OK - data survived the restart.
 record) with `append_many()` (one fsync per batch). Same durability, ~27x faster
 here (more on platforms with a costlier `fsync`).
 
-`demos/restart_stream.py` (`make demo-restart`) ingests 10M records across 5
+`demos/restart_stream.py` (`make demo-restart`) ingests 1M records across 5
 stop/start sessions, resuming at the persisted offset each time. Proof the log
-survives repeated restarts (10M in ~12s here). It also prints the reopen scan
+survives repeated restarts (1M in ~1.5s here; `make demo-restart 10000000 5` for
+10M). It also prints the reopen scan
 time per session, which grows linearly with log size (the O(n) recovery cost a
 persisted index would remove).
 
@@ -203,8 +208,9 @@ Across **separate processes** the rule is **one writer per stream**, and it is
 enforced: the first process to open a stream takes an OS file lock (`flock`) on its
 log. Other processes get a read-only view (`stream.writable` is `False`): reads
 work, `append`/`close`/`delete` raise `StreamLocked`, and they never touch the
-file. A read-only view is a snapshot; open it again from a new `Store` to see new
-records. The lock is released when the writer closes the store or exits (even on a
+file. A read-only view is a snapshot: `subscribe` on it replays what was there
+at open and then waits for appends that never come. Open it again from a new
+`Store` to see new records. The lock is released when the writer closes the store or exits (even on a
 crash). A forked child never writes through its parent's streams; open stores after
 forking. On Windows there is no `flock`, so the rule is not enforced there.
 

@@ -23,11 +23,15 @@ payload:
 [4 bytes: length][4 bytes: crc32][payload bytes]
 ```
 
-On read we walk the file frame by frame and check two things before trusting a
+On open we walk the file frame by frame and check two things before trusting a
 record: that the file actually holds the promised bytes (else it was a torn
 write from a crash), and that the CRC matches (else it is corrupt). We stop at
 the first record that fails either check. Everything before that point is
 guaranteed intact, so a crash mid write never corrupts what came before it.
+
+Every `read` checks the CRC again. If bytes change on disk after open (bit rot,
+another program writing the file), it raises `CorruptStream` rather than return
+wrong data.
 
 ## The stream: one append only file
 

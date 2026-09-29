@@ -1,7 +1,8 @@
 # API reference
 
 ```python
-from durastream import Store, AsyncStore, to_token, from_token
+from durastream import AsyncBatchWriter, AsyncStore, Store, from_token, to_token
+from durastream import CorruptStream, DurastreamError, StreamClosed, StreamLocked
 ```
 
 Stream names are `[a-z0-9._-]+`: lowercase, so two names never share a file on a
@@ -29,13 +30,14 @@ One append only stream. Get one from `Store.create` or `Store.open`.
 | `append(payload) -> int` | Frame and fsync one record. Returns the new `next_offset`. Raises `StreamClosed` if closed, `StreamLocked` if read-only. |
 | `append_many(payloads) -> int` | Frame and fsync a batch in one flush. Returns the new `next_offset`. |
 | `read(offset=0, end=None) -> list[bytes]` | Record payloads for the half open range `[offset, end)`. Raises `CorruptStream` if bytes on disk fail their checksum. |
-| `subscribe(offset=0)` | Iterator: yield records from `offset`, then block for new ones (in process). Ends once the stream is closed or deleted and drained. |
+| `subscribe(offset=0)` | Iterator: yield records from `offset`, then block for new ones appended in this process. Ends once the stream is closed or deleted and drained. On a read-only view it replays the snapshot, then waits. |
 | `close()` | Mark the stream closed (persisted). Reads still work. Raises `StreamLocked` if read-only. |
 | `next_offset` | Record count and the position the next append lands at. |
 | `closed` | Whether the stream is closed, deleted, or disabled after a failed write. |
 | `writable` | Whether this handle owns the log in this process (see [Concurrency](concurrency.md)). |
 | `add_listener(callback) -> int` | Call `callback(start, records)` after every change: after an append with the records it made durable and the offset of the first one, after a close or delete with `(next_offset, [])`. Runs in the thread that made the change, outside all locks. Keep it quick; exceptions are reported and ignored. Returns an id. A change already in flight may still call it once after `remove_listener` returns. |
 | `remove_listener(id) -> bool` | Stop calling a listener. |
+| `name` | The stream name. |
 | `content_type` | The MIME type set at creation. |
 
 ## Errors
@@ -54,8 +56,9 @@ the log never keeps a partial record.
 
 ## AsyncStore and AsyncDurableStream
 
-The async mirror of the sync API, same names, awaitable. Every call runs the sync
-method in `asyncio.to_thread`.
+The async mirror of the sync API, same names, awaitable. Blocking calls run the
+sync method in `asyncio.to_thread`; `subscribe` and `wait` are pushed by the
+append itself.
 
 ```python
 store = AsyncStore("./data")
