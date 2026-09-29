@@ -284,16 +284,20 @@ make build       # wheel + sdist into dist/
 Ubuntu, macOS and Windows with Python 3.12 and 3.14 (plus the disk-full test on
 Ubuntu).
 
-To release, bump `version` in `pyproject.toml` (the only version), commit, then:
+The version comes from the git tag (hatch-vcs): tag `v0.0.1a3` builds `0.0.1a3`,
+there is nothing to bump. To release, tag an up-to-date `main` and push the tag:
 
 ```bash
-git tag v<version> && git push origin main v<version>
+git checkout main && git pull
+git tag v<version> && git push origin v<version>
 ```
 
-`release.yml` builds the wheel and sdist, installs the wheel on Linux, macOS and
-Windows and runs the test suite there, and only then publishes to PyPI via trusted
-publishing (GitHub environment `pypi`). A version can only be published once, so
-fix and bump rather than re-tag.
+`release.yml` then builds the wheel and sdist, installs the wheel on Linux, macOS
+and Windows and runs the test suite there. The publish step waits for your approval
+(GitHub environment `pypi`, Actions > the run > "Review deployments"); once
+approved it publishes to PyPI via trusted publishing and creates the GitHub release
+with the files attached (a/b/rc/dev versions as pre-release). A version can only be
+published once, so fix and tag the next version rather than re-tag.
 
 An experimental Rust engine for durastream (same API and on-disk format, ~10x
 faster recovery and replay) was built and then set aside to keep this package pure

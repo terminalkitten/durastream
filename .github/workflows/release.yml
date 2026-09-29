@@ -1,5 +1,5 @@
-# Release durastream: bump `version` in pyproject.toml, then push tag v<version>.
-# Builds the wheel and sdist and tests the wheel on Linux, macOS and Windows. The
+# Release durastream: push a tag v<version>; the version comes from the tag
+# (hatch-vcs), nothing to bump. Builds the wheel and sdist and tests the wheel on Linux, macOS and Windows. The
 # publish job then waits for a required reviewer to approve the `pypi` environment
 # (Settings > Environments); once approved it publishes to PyPI and creates the
 # GitHub release with the files attached.
@@ -14,13 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: tag matches pyproject.toml
-        run: |
-          v=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
-          echo "tag=$GITHUB_REF_NAME pyproject=$v"
-          test "$GITHUB_REF_NAME" = "v$v"
+        with:
+          fetch-depth: 0 # hatch-vcs reads the version from the tag
       - uses: astral-sh/setup-uv@v6
       - run: uv build --out-dir dist
+      - name: version matches the tag
+        run: |
+          ls dist
+          ls dist/durastream-"${GITHUB_REF_NAME#v}"-py3-none-any.whl
       - uses: actions/upload-artifact@v4
         with:
           name: dist

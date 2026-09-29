@@ -1,6 +1,6 @@
 [project]
 name = "durastream"
-version = "0.0.1a3" # single source of truth; release tag must be v<version>
+dynamic = ["version"]  # from the git tag (hatch-vcs): tag v0.0.1a3 -> 0.0.1a3
 description = "Tiny durable streaming on local disk"
 readme = "README.md"
 license = "MIT"
@@ -9,8 +9,12 @@ requires-python = ">=3.12"
 dependencies = []
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+raw-options = { version_scheme = "no-guess-dev", fallback_version = "0.0.0" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/durastream"]
