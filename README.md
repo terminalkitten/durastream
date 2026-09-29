@@ -5,7 +5,7 @@
 # dura.stream
 
 Minimal durable streaming on local disk. Append-only, crash-safe, tailable streams
-you import into any Python app, no server, no dependencies: stdlib only.
+you import into any Python app, no server, no runtime dependencies.
 
 ## Install
 
@@ -13,7 +13,17 @@ you import into any Python app, no server, no dependencies: stdlib only.
 uv add durastream
 ```
 
-Requires Python 3.12+. No runtime dependencies.
+Requires Python 3.12+. No runtime dependencies. Linux and macOS wheels include a
+compiled Rust core for speed; everywhere else (Windows, PyPy) the same package runs in
+pure Python. The API, behaviour and on-disk format are identical either way.
+
+```python
+import durastream
+
+durastream.ENGINE  # "native" (Rust core) or "python"
+```
+
+Set `DURASTREAM_PURE=1` to force the pure-Python engine.
 
 ## Quick start
 
@@ -94,6 +104,8 @@ survived a restart:
 ```bash
 make demo
 ```
+
+Output (numbers vary by machine and engine):
 
 ```
 ingesting 100,000 readings in batches of 1,000 ...
@@ -191,7 +203,49 @@ forking. On Windows there is no `flock`, so the rule is not enforced there.
 
 ## Develop
 
+You need [uv](https://docs.astral.sh/uv/) and a Rust toolchain ([rustup](https://rustup.rs)).
+
 ```bash
+uv sync          # .venv + dev deps, compiles the Rust core (release mode)
 make test        # pytest (sync + async)
 make lint        # ruff format + ty typecheck
 ```
+
+`uv run` / `uv sync` recompile the Rust core automatically when anything under `core/`
+changes, so there is no separate build step while developing.
+
+Layout:
+
+```
+src/durastream/   Python API + pure-Python engine; _engine.py picks the engine at import
+core/             Rust core + PyO3 bindings, compiled to durastream/core.abi3.so
+tests/            one test suite, run against both engines
+scripts/bench.py  pure Python vs native benchmark
+```
+
+Run the suite on the pure-Python engine with `DURASTREAM_PURE=1 make test`.
+
+### Benchmark
+
+```bash
+uv run python scripts/bench.py          # 100k records, median of 9 runs (~1 min)
+uv run python scripts/bench.py --quick  # 20k records, 3 runs
+```
+
+It first checks that both engines read each other's files, then times each case on
+both. Apple M-series:
+
+| case | python | native | speedup |
+|---|---|---|---|
+| `append()` x1000 (fsync each) | 37.2ms | 34.6ms | 1.1x |
+| `append()` 4 threads x500 | 41.8ms | 33.9ms | 1.2x |
+| `append_many` small x100k | 37.0ms | 10.5ms | 3.5x |
+| `append_many` 4KiB x10k | 22.2ms | 17.7ms | 1.3x |
+| `read(0)` small x100k | 28.2ms | 3.3ms | 8.6x |
+| `read(0)` 4KiB x10k | 11.9ms | 11.5ms | 1.0x |
+| `read(o, o+10)` x10k | 50.5ms | 9.9ms | 5.1x |
+| reopen + recover 100k | 62.3ms | 1.9ms | 33x |
+| `subscribe` drain 100k | 31.6ms | 4.4ms | 7.1x |
+| `subscribe` live 100k | 70.9ms | 11.2ms | 6.3x |
+
+fsync-bound work runs at disk speed on both engines. The native engine wins on per-record work.
