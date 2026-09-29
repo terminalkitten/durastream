@@ -308,8 +308,24 @@ uv venv --clear /tmp/ds && VIRTUAL_ENV=/tmp/ds uv pip install --no-cache --no-in
 /tmp/ds/bin/python -c "import durastream; print(durastream.ENGINE)"   # native
 ```
 
-### CI
+### CI and release
 
 `ci.yml` runs on every push to `main` and every PR: `make lint` plus `cargo deny`,
 `make test` on Ubuntu and macOS with Python 3.12 and 3.14 (plus the disk-full test on
 Ubuntu), and the pure-Python wheel on Windows.
+
+To release, bump `version` in `pyproject.toml` (the only version), commit, then:
+
+```bash
+git tag v<version> && git push origin main v<version>
+```
+
+`release.yml` then builds:
+
+- native wheels for Linux (glibc and musl, x86_64 and aarch64) and macOS (x86_64 and arm64);
+- the pure-Python wheel;
+- the sdist.
+
+It installs each wheel on its own platform and runs the test suite there. Only if all
+pass does it publish to PyPI via trusted publishing (GitHub environment `pypi`). A
+version can only be published once, so fix and bump rather than re-tag.
