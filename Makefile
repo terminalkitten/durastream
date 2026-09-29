@@ -1,4 +1,4 @@
-.PHONY: full check lint format typecheck test test-rust test-native test-pure test-diskfull bench build demo demo-bench demo-restart demo-queue demo-ledger demo-concurrent demo-serve present-preview present-build
+.PHONY: full check lint format typecheck test test-rust test-native test-pure test-diskfull bench bench-duplex build demo demo-bench demo-restart demo-queue demo-ledger demo-concurrent demo-serve present-preview present-build
 
 CORE := --manifest-path core/Cargo.toml
 
@@ -50,6 +50,10 @@ test-diskfull:
 
 bench:
 	uv run python scripts/bench.py
+
+# LLM -> durastream -> SSE workload: token latency, CPU, resume, per engine
+bench-duplex:
+	uv run python scripts/bench_duplex.py
 
 # into dist/: Rust wheel (this platform only), sdist, pure-Python fallback wheel
 build:

@@ -266,7 +266,12 @@ make typecheck   # ty only
 ```bash
 make bench                              # 100k records, median of 9 runs (~1 min)
 uv run python scripts/bench.py --quick  # 20k records, 3 runs
+make bench-duplex                       # LLM -> stream -> SSE clients, per engine (~1 min)
 ```
+
+`make bench-duplex` models an LLM/SSE app: chats append tokens at 50 tok/s while
+SSE-style clients tail them (some disconnect and resume). It reports token latency
+(produced -> seen by a client), CPU per 1k tokens, event-loop lag and resume time.
 
 It first checks that both engines read each other's files, then times each case on
 both. Apple M-series:
