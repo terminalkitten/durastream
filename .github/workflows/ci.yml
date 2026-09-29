@@ -39,6 +39,15 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: make test # cargo test + pytest on native and pure engines
+      - if: runner.os == 'Linux'
+        name: disk-full rollback (real ENOSPC on a 1 MiB tmpfs)
+        run: |
+          sudo mkdir -p /mnt/small
+          sudo mount -t tmpfs -o size=1m tmpfs /mnt/small
+          sudo chmod 1777 /mnt/small
+          export DURASTREAM_SMALL_FS=/mnt/small
+          uv run pytest -q tests/test_disk_full.py
+          DURASTREAM_PURE=1 uv run pytest -q tests/test_disk_full.py
 
   # Windows has no native wheel: install the pure-Python wheel and test it there
   windows-pure:

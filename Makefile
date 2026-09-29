@@ -1,4 +1,4 @@
-.PHONY: full check lint format typecheck test test-rust test-native test-pure bench build demo demo-bench demo-restart demo-queue demo-ledger demo-concurrent demo-serve present-preview present-build
+.PHONY: full check lint format typecheck test test-rust test-native test-pure test-diskfull bench build demo demo-bench demo-restart demo-queue demo-ledger demo-concurrent demo-serve present-preview present-build
 
 CORE := --manifest-path core/Cargo.toml
 
@@ -43,6 +43,10 @@ test-native:
 test-pure:
 	DURASTREAM_PURE=1 uv run python -c "import durastream as d; assert d.ENGINE == 'python', d.ENGINE"
 	DURASTREAM_PURE=1 uv run pytest -q
+
+# disk-full rollback against a real ENOSPC (tiny tmpfs, in Docker)
+test-diskfull:
+	scripts/test-diskfull.sh
 
 bench:
 	uv run python scripts/bench.py
