@@ -16,11 +16,11 @@ from durastream import Store
 store = Store("./data")
 stream = store.create("orders", content_type="text/plain")
 
-stream.append(b"order-1")            # -> 1  (new next_offset)
-stream.append_many([b"a", b"b"])     # -> 3  one fsync for the whole batch
+stream.append(b"order-1")  # -> 1  (new next_offset)
+stream.append_many([b"a", b"b"])  # -> 3  one fsync for the whole batch
 
-stream.read(0)      # [b"order-1", b"a", b"b"]   from an offset
-stream.read(1, 2)   # [b"a"]                     half-open [start, end)
+stream.read(0)  # [b"order-1", b"a", b"b"]   from an offset
+stream.read(1, 2)  # [b"a"]                     half-open [start, end)
 stream.next_offset  # 3
 ```
 
@@ -37,7 +37,7 @@ record is dropped, the intact prefix survives.
 ```python
 store2 = Store("./data")
 stream = store2.open("orders")
-stream.read(0)      # the records that were durably written
+stream.read(0)  # the records that were durably written
 ```
 
 ## Tail like `tail -f`
@@ -46,7 +46,7 @@ stream.read(0)      # the records that were durably written
 ones as they are appended.
 
 ```python
-for record in stream.subscribe(0):   # replay, then follow live
+for record in stream.subscribe(0):  # replay, then follow live
     print(record)
 ```
 
@@ -64,7 +64,7 @@ stream = await store.create("chat")
 await stream.append(b"hello ")
 await stream.read(0)
 
-async for record in stream.subscribe(0):   # poll-based tail
+async for record in stream.subscribe(0):  # poll-based tail
     print(record)
 ```
 
@@ -79,15 +79,17 @@ import threading
 
 stream = store.create("events", "application/json")
 
+
 def consumer():
-    for record in stream.subscribe(0):   # replay, then follow live
+    for record in stream.subscribe(0):  # replay, then follow live
         handle(record)
+
 
 threading.Thread(target=consumer, daemon=True).start()
 
 for event in source:
     stream.append(json.dumps(event).encode())
-stream.close()                           # lets the consumer finish
+stream.close()  # lets the consumer finish
 ```
 
 The consumer returns once the stream is closed and it has caught up.
@@ -105,6 +107,7 @@ def read_checkpoint(path):
     except FileNotFoundError:
         return 0
 
+
 queue = store.open("jobs")
 offset = read_checkpoint("worker.offset")
 
@@ -113,7 +116,7 @@ while offset < queue.next_offset:
     for job in chunk:
         handle(job)
     offset += len(chunk)
-    with open("worker.offset", "w") as f:   # commit after the chunk
+    with open("worker.offset", "w") as f:  # commit after the chunk
         f.write(str(offset))
 ```
 
@@ -127,9 +130,10 @@ Reading up to an offset gives a point in time value.
 ```python
 def rebuild(stream):
     state = initial()
-    for raw in stream.read(0):           # every record from the start
+    for raw in stream.read(0):  # every record from the start
         state = apply(state, json.loads(raw))
     return state
+
 
 # state right after offset k
 def rebuild_at(stream, k):
@@ -145,8 +149,8 @@ def rebuild_at(stream, k):
 same stream. A reader remembers one integer to pick up where it left off.
 
 ```python
-stream = store.open("events")     # fresh process, same disk
-resume = stream.next_offset       # everything up to here is durable
+stream = store.open("events")  # fresh process, same disk
+resume = stream.next_offset  # everything up to here is durable
 records = stream.read(0, resume)  # replay what was written before
 ```
 

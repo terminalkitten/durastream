@@ -31,7 +31,7 @@ it per record; batching pays it once for the whole group, which is much faster
 for the same guarantee.
 
 ```python
-for r in records:            # one fsync each
+for r in records:  # one fsync each
     stream.append(r)
 
 stream.append_many(records)  # one fsync total, roughly 27x faster
@@ -47,9 +47,9 @@ where the last one stopped.
 ```python
 store = Store(root)
 stream = store.open("events")
-resume = stream.next_offset      # where the previous run ended
+resume = stream.next_offset  # where the previous run ended
 stream.append_many(more)
-store.close()                    # stop
+store.close()  # stop
 # next run: reopen, next_offset is restored by scanning the log
 ```
 
@@ -62,13 +62,13 @@ it restarts from the last committed offset, so every job is processed at least
 once and nothing is lost.
 
 ```python
-offset = read_checkpoint(path)        # last committed offset, or 0
+offset = read_checkpoint(path)  # last committed offset, or 0
 while offset < queue.next_offset:
     chunk = queue.read(offset, offset + 1000)
     for job in chunk:
         handle(job)
     offset += len(chunk)
-    write_checkpoint(path, offset)    # commit only after a full chunk
+    write_checkpoint(path, offset)  # commit only after a full chunk
 ```
 
 `make demo-queue`
@@ -99,9 +99,11 @@ nothing lost. See the [Concurrency](concurrency.md) page.
 ```python
 store = AsyncStore(root)
 
+
 async def user(u):
     s = await store.create(f"chat.{u}")
     await asyncio.gather(produce(s), consume(s))
+
 
 await asyncio.gather(*(user(u) for u in range(40)))
 ```

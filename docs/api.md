@@ -44,7 +44,7 @@ await stream.append(b"hi")
 await stream.read(0)
 await stream.close()
 
-async for record in stream.subscribe(0):   # poll-based tail
+async for record in stream.subscribe(0):  # poll-based tail
     ...
 ```
 
@@ -58,8 +58,8 @@ Offsets are integers. These helpers convert to and from the zero padded wire
 token format, and understand the `-1` (start) and `now` (tail) sentinels.
 
 ```python
-to_token(1)                       # "00000000000000000001"
-from_token("-1", next_offset)     # 0
-from_token("now", next_offset)    # next_offset
+to_token(1)  # "00000000000000000001"
+from_token("-1", next_offset)  # 0
+from_token("now", next_offset)  # next_offset
 from_token("000...0003", next_offset)  # 3
 ```
