@@ -40,7 +40,7 @@ class _Meta:
             try:
                 rows = self._db.execute(sql, params).fetchall()
                 self._db.commit()
-            except sqlite3.Error as e:  # same exception type as the native engine
+            except sqlite3.Error as e:  # one exception family for callers
                 raise DurastreamError(str(e)) from e
             return rows
 

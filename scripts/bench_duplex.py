@@ -1,9 +1,9 @@
-"""LLM -> durastream -> SSE duplex benchmark: pure Python vs native engine.
+"""LLM -> durastream -> SSE duplex benchmark.
 
 Writers append LLM tokens at a steady rate; SSE-style readers tail each stream,
-either polling (read + sleep) or pushed (AsyncDurableStream.subscribe), and some disconnect and resume mid-stream. The batched
-writer uses AsyncBatchWriter. Each scenario runs in a child process per engine (the engine
-is picked at import), so the whole app runs on one engine, as in production.
+either polling (read + sleep) or pushed (AsyncDurableStream.subscribe), and some
+disconnect and resume mid-stream. The batched writer uses AsyncBatchWriter. Each
+scenario runs in its own child process, so CPU and memory don't carry over.
 
 Run: make bench-duplex   (or uv run python scripts/bench_duplex.py [--quick])
 """
@@ -12,7 +12,6 @@ import argparse
 import asyncio
 import contextlib
 import json
-import os
 import shutil
 import statistics
 import subprocess
@@ -173,7 +172,6 @@ async def run(chats: int, readers: int, batched: bool, push: bool, tokens: int) 
     finally:
         shutil.rmtree(root, ignore_errors=True)
     return {
-        "engine": durastream.ENGINE,
         "p50": statistics.median(lat),
         "p99": pct(lat, 99),
         "max": max(lat),
@@ -205,33 +203,24 @@ def main() -> None:
         f"{RATE} tok/s per chat, SSE poll {POLL * 1e3:.0f} ms; latency = token produced -> read by client\n"
     )
     hdr = (
-        f"{'scenario':16} {'engine':7} {'p50 ms':>7} {'p99 ms':>7} {'max ms':>7} "
+        f"{'scenario':20} {'p50 ms':>7} {'p99 ms':>7} {'max ms':>7} "
         f"{'cpu ms/1k':>9} {'lag p99':>7} {'resume':>7} {'appends':>7} {'wall/ideal':>10}"
     )
     print(hdr)
     print("-" * len(hdr))
     for name in SCENARIOS:
-        rows = {}
-        for engine, pure in (("python", "1"), ("native", "")):
-            env = {**os.environ, "DURASTREAM_PURE": pure}
-            cmd = [sys.executable, __file__, "--child", name] + (
-                ["--quick"] if args.quick else []
-            )
-            out = subprocess.run(
-                cmd, env=env, capture_output=True, text=True, check=True
-            )
-            m = json.loads(out.stdout.strip().splitlines()[-1])
-            assert m["engine"] == engine, f"expected {engine}, got {m['engine']}"
-            rows[engine] = m
-            print(
-                f"{name:16} {engine:7} {m['p50']:7.1f} {m['p99']:7.1f} {m['max']:7.1f} "
-                f"{m['cpu_per_1k']:9.1f} {m['lag_p99']:7.1f} {m['resume_p50']:7.1f} "
-                f"{m['appends']:7,} {m['wall_ratio']:10.2f}"
-            )
-        py, nat = rows["python"], rows["native"]
+        cmd = [sys.executable, __file__, "--child", name]
+        out = subprocess.run(
+            cmd + (["--quick"] if args.quick else []),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        m = json.loads(out.stdout.strip().splitlines()[-1])
         print(
-            f"{'':16} native vs pure: p99 {py['p99'] / nat['p99']:.1f}x, "
-            f"cpu {py['cpu_per_1k'] / nat['cpu_per_1k']:.1f}x\n"
+            f"{name:20} {m['p50']:7.1f} {m['p99']:7.1f} {m['max']:7.1f} "
+            f"{m['cpu_per_1k']:9.1f} {m['lag_p99']:7.1f} {m['resume_p50']:7.1f} "
+            f"{m['appends']:7,} {m['wall_ratio']:10.2f}"
         )
 
 

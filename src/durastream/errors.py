@@ -1,4 +1,4 @@
-"""Exceptions shared by both engines (the native core raises these same classes)."""
+"""Exceptions raised by durastream."""
 
 
 class DurastreamError(Exception):
