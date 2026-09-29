@@ -262,16 +262,15 @@ uv run python scripts/bench_duplex.py --quick  # half the chats and tokens
 ```
 
 Models an LLM/SSE app: chats append tokens at 50 tok/s while SSE-style clients tail
-them, polling or pushed (`subscribe`), some disconnecting and resuming. Apple
-M-series:
+them with `subscribe`, some disconnecting and resuming. Latency is from token
+produced to seen by a client. Apple M-series:
 
 | scenario | p50 | p99 | CPU per 1k tokens |
 |---|---|---|---|
-| 1 chat, polling (50 ms) | 25.2 ms | 51.0 ms | 928 ms |
-| 1 chat, `subscribe` | 0.5 ms | 1.8 ms | 868 ms |
-| 200 chats × 3 clients, polling | 35.3 ms | 77.1 ms | 159 ms |
-| 200 chats × 3 clients, `subscribe` | 5.4 ms | 31.5 ms | 141 ms |
-| same, `AsyncBatchWriter` | 20.4 ms | 36.8 ms | 78 ms |
+| 1 chat | 0.4 ms | 1.6 ms | 670 ms |
+| 50 chats | 1.0 ms | 8.2 ms | 179 ms |
+| 200 chats × 3 clients | 4.8 ms | 13.8 ms | 128 ms |
+| same, `AsyncBatchWriter` | 22.7 ms | 38.5 ms | 79 ms |
 
 ### Build
 
