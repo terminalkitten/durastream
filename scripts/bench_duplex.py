@@ -5,7 +5,7 @@ either polling (read + sleep) or pushed (AsyncDurableStream.subscribe), and some
 disconnect and resume mid-stream. The batched writer uses AsyncBatchWriter. Each
 scenario runs in its own child process, so CPU and memory don't carry over.
 
-Run: make bench-duplex   (or uv run python scripts/bench_duplex.py [--quick])
+Run: make bench   (or uv run python scripts/bench_duplex.py [--quick])
 """
 
 import argparse
