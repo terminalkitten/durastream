@@ -5,7 +5,7 @@ from durastream import AsyncStore
 
 
 async def test_async_roundtrip():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         store = AsyncStore(root)
         s = await store.create("t", "text/plain")
         assert await s.append(b"a") == 1
@@ -18,7 +18,7 @@ async def test_async_roundtrip():
 
 
 async def test_async_subscribe():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         store = AsyncStore(root)
         s = await store.create("t")
         got = []

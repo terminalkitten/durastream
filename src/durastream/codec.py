@@ -1,4 +1,3 @@
-import mmap
 import struct
 import zlib
 
@@ -7,11 +6,16 @@ HEADER_SIZE = HEADER.size  # 8
 TOKEN_WIDTH = 20  # zero-padded offset token width
 
 
+MAX_PAYLOAD = 0xFFFF_FFFF  # u32 length field
+
+
 def pack_frame(payload: bytes) -> bytes:
+    if len(payload) > MAX_PAYLOAD:
+        raise ValueError(f"payload too large: {len(payload)} bytes")
     return HEADER.pack(len(payload), zlib.crc32(payload)) + payload
 
 
-def iter_frames(data: bytes | mmap.mmap):
+def iter_frames(data: bytes):
     """
     Yield payload, next_pos per intact frame
     stop at the first torn/corrupt one.

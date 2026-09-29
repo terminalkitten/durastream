@@ -1,15 +1,24 @@
 import os
+import sqlite3
 import tempfile
 import threading
 import time
 
 import pytest
 
-from durastream import Store, StreamClosed, from_token, to_token
+from durastream import (
+    CorruptStream,
+    DurastreamError,
+    Store,
+    StreamClosed,
+    StreamLocked,
+    from_token,
+    to_token,
+)
 
 
 def test_roundtrip():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         s = Store(root).create("t", "text/plain")
         for b in (b"a", b"b", b"c"):
             s.append(b)
@@ -20,7 +29,7 @@ def test_roundtrip():
 
 
 def test_append_many():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         s = Store(root).create("t", "text/plain")
         assert s.append_many([b"a", b"b", b"c"]) == 3  # one fsync for the batch
         assert s.append_many([]) == 3  # empty batch is a no-op
@@ -30,7 +39,7 @@ def test_append_many():
 
 
 def test_durability_reopen():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         Store(root).create("t", "text/plain")
         s = Store(root).open("t")  # fresh Store, same disk
         s.append(b"x")
@@ -41,13 +50,15 @@ def test_durability_reopen():
 
 
 def test_recovery_torn_tail():
-    with tempfile.TemporaryDirectory() as root:
-        s = Store(root).create("t", "text/plain")
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = Store(root)
+        s = store.create("t", "text/plain")
         s.append(b"aa")
         s.append(b"bb")
         path = os.path.join(root, "streams", "t.log")
         with open(path, "ab") as f:  # torn frame: garbage shorter than a header
             f.write(b"\x00\x00\x00\x09partial")
+        store.close()  # the writer lets go of the log; the next opener repairs it
         s2 = Store(root).open("t")
         assert s2.read(0) == [b"aa", b"bb"]  # tail dropped, no exception
         assert s2.next_offset == 2
@@ -56,7 +67,7 @@ def test_recovery_torn_tail():
 
 
 def test_crc_guard():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         s = Store(root).create("t", "text/plain")
         s.append(b"good")
         s.append(b"next")
@@ -72,7 +83,7 @@ def test_crc_guard():
 
 
 def test_closed():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         s = Store(root).create("t", "text/plain")
         s.append(b"a")
         s.close()
@@ -87,7 +98,7 @@ def test_closed():
 
 
 def test_tail():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         s = Store(root).create("t", "text/plain")
         got = []
         sub = s.subscribe(0)
@@ -115,7 +126,7 @@ def test_tokens():
 
 
 def test_content_type_mismatch():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         store = Store(root)
         store.create("s", "text/plain")
         store.create("s", "text/plain")  # same type ok
@@ -128,7 +139,7 @@ def test_content_type_mismatch():
 
 
 def test_delete_and_reopen():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         store = Store(root)
         store.create("s", "text/plain").append(b"x")
         store.delete("s")
@@ -141,7 +152,7 @@ def test_delete_and_reopen():
 
 
 def test_invalid_name():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         try:
             Store(root).create("bad/name")
             assert False, "invalid name should raise"
@@ -150,7 +161,7 @@ def test_invalid_name():
 
 
 def test_concurrent_create_list():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         store = Store(root)
         n = 40
 
@@ -165,10 +176,135 @@ def test_concurrent_create_list():
         assert len(store.list()) == n
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="no flock on Windows: one writer is unenforced"
+)
+def test_second_store_is_read_only_and_never_truncates():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        s = Store(root).create("t")
+        s.append(b"a")
+        path = os.path.join(root, "streams", "t.log")
+        with open(path, "ab") as f:  # half-written frame, as seen mid-append
+            f.write(b"\x00\x00")
+        size = os.path.getsize(path)
+        other = Store(root)
+        r = other.open("t")
+        assert s.writable and not r.writable
+        assert r.read(0) == [b"a"]
+        for op in (lambda: r.append(b"x"), r.close, lambda: other.delete("t")):
+            with pytest.raises(StreamLocked):
+                op()
+        assert os.path.getsize(path) == size  # a reader never truncates
+
+
+def test_delete_ends_subscriber_and_closes_stream():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = Store(root)
+        s = store.create("t")
+        th = threading.Thread(target=lambda: list(s.subscribe(0)))
+        th.start()
+        time.sleep(0.05)
+        store.delete("t")
+        th.join(timeout=2)
+        assert not th.is_alive()
+        with pytest.raises(StreamClosed):
+            s.append(b"x")
+
+
+def test_orphan_log_is_not_resurrected():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = Store(root)
+        store.create("t").append(b"old")
+        store.close()
+        # a delete that crashed after dropping the row but before removing the log
+        db = sqlite3.connect(os.path.join(root, "meta.db"))
+        db.execute("DELETE FROM streams")
+        db.commit()
+        db.close()
+        assert Store(root).create("t").read(0) == []
+
+
+def test_corruption_after_open_raises():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        s = Store(root).create("t")
+        s.append_many([b"good", b"next"])
+        path = os.path.join(root, "streams", "t.log")
+        with open(path, "r+b") as f:
+            f.seek(8)  # first payload byte
+            f.write(b"X")
+        with pytest.raises(CorruptStream):
+            s.read(0)
+
+
 def test_names_are_lowercase():
-    with tempfile.TemporaryDirectory() as root:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
         store = Store(root)
         for bad in ["Orders", "", "a/b", "a b", "a\n"]:
             with pytest.raises(ValueError):
                 store.create(bad)
         store.create("orders.v2_x-1")
+
+
+def test_exceptions_share_a_base():
+    for exc in (StreamClosed, StreamLocked, CorruptStream):
+        assert issubclass(exc, DurastreamError)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")  # fork with threads alive
+def test_forked_child_is_not_a_writer():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        s = Store(root).create("t")
+        s.append(b"parent-1")
+        pid = os.fork()
+        if pid == 0:  # child: shares the parent's lock, must still be refused
+            code = 4  # any other exception
+            try:
+                s.append(b"child")
+                code = 2
+            except StreamLocked:
+                code = 0 if not s.writable else 3
+            finally:
+                os._exit(code)  # never fall through into the rest of pytest
+        _, status = os.waitpid(pid, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        assert s.writable
+        assert s.append(b"parent-2") == 2
+        assert s.read(0) == [b"parent-1", b"parent-2"]
+
+
+def test_delete_on_closed_store_touches_nothing():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = Store(root)
+        store.create("t").append(b"x")
+        store.close()
+        with pytest.raises(DurastreamError):
+            store.delete("t")
+        assert os.path.exists(os.path.join(root, "streams", "t.log"))
+
+
+def test_database_errors_are_durastream_errors():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = Store(root)
+        db = sqlite3.connect(os.path.join(root, "meta.db"))
+        db.execute("DROP TABLE streams")
+        db.commit()
+        db.close()
+        with pytest.raises(DurastreamError):
+            store.list()
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions, not root"
+)
+def test_read_only_file_opens_read_only():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = Store(root)
+        store.create("t").append(b"x")
+        store.close()
+        os.chmod(os.path.join(root, "streams", "t.log"), 0o444)
+        r = Store(root).open("t")
+        assert not r.writable
+        assert r.read(0) == [b"x"]
+        with pytest.raises(StreamLocked):
+            r.append(b"y")

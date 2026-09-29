@@ -27,6 +27,10 @@ class AsyncDurableStream:
     def closed(self) -> bool:
         return self._s.closed
 
+    @property
+    def writable(self) -> bool:
+        return self._s.writable
+
     async def append(self, payload: bytes) -> int:
         return await asyncio.to_thread(self._s.append, payload)
 
