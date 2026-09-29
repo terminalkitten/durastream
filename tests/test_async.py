@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from durastream import AsyncStore
+from durastream import AsyncBatchWriter, AsyncStore
 
 
 async def test_async_roundtrip():
@@ -96,6 +96,73 @@ async def test_read_past_the_end_skips_the_thread_hop(monkeypatch):
         assert await s.read(1) == []
         assert await s.read(5) == []
         assert await s.read(0, 0) == []
+
+
+async def test_batch_writer_groups_appends_and_is_durable(monkeypatch):
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = AsyncStore(root)
+        s = await store.create("t")
+        calls = []
+        real = s.append_many
+
+        async def counting(batch):
+            calls.append(len(batch))
+            return await real(batch)
+
+        monkeypatch.setattr(s, "append_many", counting)
+        async with AsyncBatchWriter(s, window=0.05) as w:
+            for i in range(100):
+                w.write(b"%d" % i)
+        assert sum(calls) == 100 and len(calls) < 5, calls  # grouped
+        await store.close()
+        # everything was durable once the writer closed
+        s2 = await AsyncStore(root).open("t")
+        assert await s2.read(0) == [b"%d" % i for i in range(100)]
+
+
+async def test_batch_writer_keeps_records_when_a_flush_fails(monkeypatch):
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = AsyncStore(root)
+        s = await store.create("t")
+        real = s.append_many
+        fail = [True]
+
+        async def flaky(batch):
+            if fail.pop() if fail else False:
+                raise OSError(28, "No space left on device")
+            return await real(batch)
+
+        monkeypatch.setattr(s, "append_many", flaky)
+        w = AsyncBatchWriter(s, window=60)  # flush only when asked
+        w.write(b"a")
+        w.write(b"b")
+        with pytest.raises(OSError):
+            await w.flush()
+        w.write(b"c")
+        assert await w.flush() == 3  # a, b retried, in order
+        await w.close()
+        assert await s.read(0) == [b"a", b"b", b"c"]
+
+
+async def test_batch_writer_keeps_order_when_a_flush_is_cancelled(monkeypatch):
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = AsyncStore(root)
+        s = await store.create("t")
+        real = s.append_many
+
+        async def slow(batch):
+            await asyncio.sleep(0.05)
+            return await real(batch)
+
+        monkeypatch.setattr(s, "append_many", slow)
+        w = AsyncBatchWriter(s, window=60)
+        w.write(b"first")
+        f = asyncio.ensure_future(w.flush())
+        await asyncio.sleep(0.01)  # mid-append
+        f.cancel()
+        w.write(b"second")
+        await w.close()
+        assert await s.read(0) == [b"first", b"second"]
 
 
 async def test_subscribe_poll_argument_is_deprecated():
