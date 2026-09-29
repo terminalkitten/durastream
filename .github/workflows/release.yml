@@ -1,6 +1,8 @@
-# Release durastream: bump `version` in pyproject.toml, then push tag v<version>.
-# Builds the wheel and sdist, tests the wheel on Linux, macOS and Windows, then
-# publishes to PyPI.
+# Release durastream: push a tag v<version>; the version comes from the tag
+# (hatch-vcs), nothing to bump. Builds the wheel and sdist and tests the wheel on Linux, macOS and Windows. The
+# publish job then waits for a required reviewer to approve the `pypi` environment
+# (Settings > Environments); once approved it publishes to PyPI and creates the
+# GitHub release with the files attached.
 name: release
 
 on:
@@ -12,13 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: tag matches pyproject.toml
-        run: |
-          v=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
-          echo "tag=$GITHUB_REF_NAME pyproject=$v"
-          test "$GITHUB_REF_NAME" = "v$v"
+        with:
+          fetch-depth: 0 # hatch-vcs reads the version from the tag
       - uses: astral-sh/setup-uv@v6
       - run: uv build --out-dir dist
+      - name: version matches the tag
+        run: |
+          ls dist
+          ls dist/durastream-"${GITHUB_REF_NAME#v}"-py3-none-any.whl
       - uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -59,3 +62,24 @@ jobs:
           name: dist
           path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # only after PyPI accepted it, so a failed publish never leaves a GitHub release
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # a1 / b2 / rc1 / .dev versions are marked as pre-release
+          pre=$([[ "$TAG" =~ (a|b|rc|dev)[0-9]*$ ]] && echo --prerelease || true)
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --generate-notes --title "$TAG" $pre

@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # hatch-vcs derives the version from git tags
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
@@ -24,6 +26,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # hatch-vcs derives the version from git tags
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
