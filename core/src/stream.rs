@@ -3,7 +3,7 @@ use std::io::{self, BufReader, Read, Write};
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -20,8 +20,21 @@ pub struct DurableStream {
     content_type: String,
     db: Db,
     closed: AtomicBool,
+    /// Mirror of `State::next_offset` for lock-free reads: `append` holds the state
+    /// lock across fsync, and async callers polling on an event loop must not wait
+    /// on that.
+    next: AtomicU64,
     state: Mutex<State>,
     cond: Condvar,
+    listeners: Mutex<Listeners>,
+}
+
+type Listener = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Default)]
+struct Listeners {
+    last_id: u64,
+    all: Vec<(u64, Listener)>,
 }
 
 struct State {
@@ -114,6 +127,7 @@ impl DurableStream {
             content_type,
             db,
             closed: AtomicBool::new(closed),
+            next: AtomicU64::new(index.len() as u64 - 1),
             state: Mutex::new(State {
                 index,
                 file: Some(Arc::new(file)),
@@ -121,6 +135,7 @@ impl DurableStream {
                 pid: std::process::id(),
             }),
             cond: Condvar::new(),
+            listeners: Mutex::default(),
         })
     }
 
@@ -140,9 +155,50 @@ impl DurableStream {
         &self.content_type
     }
 
-    /// Number of records; the offset the next append lands at.
+    /// Number of records; the offset the next append lands at. Lock-free.
     pub fn next_offset(&self) -> u64 {
-        self.lock().next_offset()
+        self.next.load(Ordering::Acquire)
+    }
+
+    /// Run `f` after every change (append, close, delete): from the thread that
+    /// made it, outside all locks, possibly spuriously. Keep it quick and don't
+    /// panic. Returns an id for [`remove_listener`](Self::remove_listener).
+    pub fn add_listener(&self, f: impl Fn() + Send + Sync + 'static) -> u64 {
+        let mut ls = self
+            .listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        ls.last_id += 1;
+        let id = ls.last_id;
+        ls.all.push((id, Arc::new(f)));
+        id
+    }
+
+    /// Stop calling a listener. Returns false if `id` wasn't registered.
+    pub fn remove_listener(&self, id: u64) -> bool {
+        let mut ls = self
+            .listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let before = ls.all.len();
+        ls.all.retain(|(i, _)| *i != id);
+        ls.all.len() != before
+    }
+
+    /// Run the listeners. Callers must hold no lock (a listener may call back in).
+    pub(crate) fn notify(&self) {
+        // snapshot, so a listener may add/remove listeners without deadlocking
+        let ls: Vec<Listener> = self
+            .listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .all
+            .iter()
+            .map(|(_, f)| Arc::clone(f))
+            .collect();
+        for f in ls {
+            f();
+        }
     }
 
     /// True once closed, deleted, or disabled after a failed write.
@@ -162,6 +218,12 @@ impl DurableStream {
 
     /// Frame + fsync a batch of records in one flush. Returns the new next_offset.
     pub fn append_many<P: AsRef<[u8]>>(&self, payloads: &[P]) -> Result<u64> {
+        let result = self.append_locked(payloads);
+        self.notify(); // after the lock is released
+        result
+    }
+
+    fn append_locked<P: AsRef<[u8]>>(&self, payloads: &[P]) -> Result<u64> {
         // Frame outside the lock; only write + fsync + index update are serialized.
         let size = payloads
             .iter()
@@ -203,6 +265,7 @@ impl DurableStream {
             pos += (HEADER_SIZE + p.as_ref().len()) as u64;
             st.index.push(pos);
         }
+        self.next.store(st.next_offset(), Ordering::Release);
         self.cond.notify_all();
         Ok(st.next_offset())
     }
@@ -308,6 +371,12 @@ impl DurableStream {
 
     /// Mark the stream closed (persisted). Reads still work.
     pub fn close(&self) -> Result<()> {
+        let result = self.close_locked();
+        self.notify();
+        result
+    }
+
+    fn close_locked(&self) -> Result<()> {
         let st = self.lock();
         if !st.can_write() {
             return Err(Error::Locked(self.name.clone()));
@@ -321,7 +390,9 @@ impl DurableStream {
         Ok(())
     }
 
-    /// Release the file handle (and the lock) on delete / store close; wakes subscribers.
+    /// Release the file handle (and the lock) on delete / store close; wakes
+    /// blocked subscribers. The store runs `notify` once it has released its own
+    /// lock, so listeners never run under it.
     pub(crate) fn close_fds(&self) {
         let mut st = self.lock();
         st.file = None;

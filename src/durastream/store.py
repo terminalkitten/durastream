@@ -167,29 +167,37 @@ class Store:
 
         Raises StreamLocked if another process owns the log.
         """
-        with self._lock:
-            self._meta.check_open()  # before any file is touched
-            path = self._path(name)
-            s = self._open.get(name)
-            # Hold the log's lock across the unlink (ours if we're the writer, else
-            # a probe), so no other process can start writing a file about to vanish.
-            guard = (
-                None if s is not None and s.writable else _lock_for_removal(name, path)
-            )
-            try:
-                if s is not None and fcntl is None:
-                    s._close_fds()  # Windows can't unlink an open file
-                # file first: a crash after this leaves a row with no log, which
-                # reopens empty; the reverse order could resurrect deleted records
-                removed = _remove_if_exists(path)
-            finally:
-                if guard is not None:
-                    guard.close()
+        s = None
+        try:
+            with self._lock:
+                self._meta.check_open()  # before any file is touched
+                path = self._path(name)
+                s = self._open.get(name)
+                # Hold the log's lock across the unlink (ours if we're the writer,
+                # else a probe), so no other process can start writing a file that
+                # is about to vanish.
+                guard = (
+                    None
+                    if s is not None and s.writable
+                    else _lock_for_removal(name, path)
+                )
+                try:
+                    if s is not None and fcntl is None:
+                        s._close_fds()  # Windows can't unlink an open file
+                    # file first: a crash after this leaves a row with no log, which
+                    # reopens empty; the reverse order could resurrect deleted records
+                    removed = _remove_if_exists(path)
+                finally:
+                    if guard is not None:
+                        guard.close()
+                if s is not None:
+                    self._open.pop(name)._close_fds()
+                if removed:
+                    self._fsync_dir()
+                self._meta.execute("DELETE FROM streams WHERE name=?", (name,))
+        finally:
             if s is not None:
-                self._open.pop(name)._close_fds()
-            if removed:
-                self._fsync_dir()
-            self._meta.execute("DELETE FROM streams WHERE name=?", (name,))
+                s._notify()  # outside the store lock: listeners may call back into it
 
     def list(self) -> list[str]:
         """Stream names, sorted."""
@@ -200,10 +208,13 @@ class Store:
     def close(self) -> None:
         """Release every stream's file handle and close the metadata DB."""
         with self._lock:
-            for s in self._open.values():
-                s._close_fds()
+            streams = list(self._open.values())
             self._open.clear()
+            for s in streams:
+                s._close_fds()
             self._meta.close()
+        for s in streams:
+            s._notify()  # outside the store lock: listeners may call back into it
 
 
 def _check_type(name: str, existing: str, given: str | None) -> None:

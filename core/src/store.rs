@@ -193,17 +193,25 @@ impl Store {
         // file first: a crash after this leaves a row with no log, which reopens
         // empty; the reverse order could resurrect deleted records
         let removed = remove_if_exists(&path)?;
-        if let Some(s) = open.remove(name) {
+        let stream = open.remove(name);
+        if let Some(s) = &stream {
             s.close_fds();
         }
         drop(guard);
-        if removed {
-            self.fsync_dir()?;
+        let result = (|| {
+            if removed {
+                self.fsync_dir()?;
+            }
+            with_db(&self.db, |db| {
+                db.execute("DELETE FROM streams WHERE name=?", [name])
+            })?;
+            Ok(())
+        })();
+        drop(open);
+        if let Some(s) = stream {
+            s.notify(); // outside the map lock: listeners may call back into the store
         }
-        with_db(&self.db, |db| {
-            db.execute("DELETE FROM streams WHERE name=?", [name])
-        })?;
-        Ok(())
+        result
     }
 
     /// Stream names, sorted.
@@ -218,11 +226,15 @@ impl Store {
     /// Release every stream's file handle and close the metadata DB.
     pub fn close(&self) {
         let mut open = self.open_map();
-        for s in open.values() {
+        let streams: Vec<_> = open.drain().map(|(_, s)| s).collect();
+        for s in &streams {
             s.close_fds();
         }
-        open.clear();
         *self.db.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        drop(open);
+        for s in &streams {
+            s.notify(); // outside the map lock: listeners may call back into the store
+        }
     }
 }
 

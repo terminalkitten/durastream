@@ -308,3 +308,47 @@ def test_read_only_file_opens_read_only():
         assert r.read(0) == [b"x"]
         with pytest.raises(StreamLocked):
             r.append(b"y")
+
+
+def test_listeners_fire_on_append_close_delete():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = Store(root)
+        s = store.create("t")
+        seen = []
+        lid = s.add_listener(lambda: seen.append(s.next_offset))
+        th = threading.Thread(target=s.append, args=(b"a",))  # any thread
+        th.start()
+        th.join()
+        s.append_many([b"b", b"c"])
+        s.close()
+        assert seen == [1, 3, 3]  # append, append_many, close
+        assert s.remove_listener(lid) and not s.remove_listener(lid)
+        store.delete("t")
+        assert seen == [1, 3, 3]
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
+def test_failing_listener_does_not_break_append(capsys):
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        s = Store(root).create("t")
+
+        def boom():
+            raise RuntimeError("listener bug")
+
+        s.add_listener(boom)
+        assert s.append(b"x") == 1  # durable despite the listener
+        assert s.read(0) == [b"x"]
+
+
+def test_listener_may_call_back_into_the_store_on_delete():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as root:
+        store = Store(root)
+        s = store.create("t")
+        seen = []
+        # create() takes the store's own lock, which delete holds while closing
+        s.add_listener(lambda: seen.append(store.create("other").name))
+        th = threading.Thread(target=store.delete, args=("t",))
+        th.start()
+        th.join(timeout=2)
+        assert not th.is_alive(), "delete deadlocked in a listener"
+        assert seen == ["other"]
