@@ -1,8 +1,7 @@
 """LLM -> durastream -> SSE duplex benchmark: pure Python vs native engine.
 
 Writers append LLM tokens at a steady rate; SSE-style readers tail each stream,
-either polling (read + sleep) or pushed (read + AsyncDurableStream.wait, as in
-demos/fastapi_resume.py), and some disconnect and resume mid-stream. The batched
+either polling (read + sleep) or pushed (AsyncDurableStream.subscribe), and some disconnect and resume mid-stream. The batched
 writer uses AsyncBatchWriter. Each scenario runs in a child process per engine (the engine
 is picked at import), so the whole app runs on one engine, as in production.
 
@@ -11,6 +10,7 @@ Run: make bench-duplex   (or uv run python scripts/bench_duplex.py [--quick])
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -72,13 +72,19 @@ async def writer(s, tokens: int, batched: bool) -> int:
     return appends
 
 
-async def reader(
-    s, tokens: int, push: bool, lat: list[float], resume: list[float] | None
+def check(rec: bytes, expect: int, now: int, lat: list[float] | None) -> None:
+    i, t = rec.split(b":")
+    assert int(i) == expect, f"out of order: got {int(i)}, want {expect}"
+    if lat is not None:  # replayed backlog is not live latency
+        lat.append((now - int(t)) / 1e6)
+
+
+async def poll_reader(
+    s, tokens: int, lat: list[float], resume: list[float] | None
 ) -> None:
-    """SSE loop: read from offset, then wait for more (push) or sleep (poll). With
-    `resume`, disconnect halfway and reconnect from the saved offset, timing the
-    first replayed read."""
-    offset = expect = 0
+    """SSE loop: read from offset, sleep, repeat. With `resume`, disconnect halfway
+    and reconnect from the saved offset, timing the first replayed read."""
+    offset = 0
     disconnect_at = tokens // 2 if resume is not None else None
     reconnected_at = None
     while True:
@@ -90,12 +96,8 @@ async def reader(
             resume.append((time.perf_counter() - reconnected_at) * 1e3)
             reconnected_at = None
         for rec in records:
-            i, t = rec.split(b":")
-            assert int(i) == expect, f"out of order: got {int(i)}, want {expect}"
-            expect += 1
-            if not replay:  # replayed backlog is not live latency
-                lat.append((now - int(t)) / 1e6)
-        offset += len(records)
+            check(rec, offset, now, None if replay else lat)
+            offset += 1
         if s.closed and offset >= s.next_offset:
             break
         if disconnect_at is not None and offset >= disconnect_at:
@@ -103,11 +105,36 @@ async def reader(
             await asyncio.sleep(DISCONNECT)  # client gone; tokens pile up
             reconnected_at = time.perf_counter()
             continue
-        if push:
-            await s.wait(offset)
-        else:
-            await asyncio.sleep(POLL)
-    assert expect == tokens, f"saw {expect} of {tokens} tokens"
+        await asyncio.sleep(POLL)
+    assert offset == tokens, f"saw {offset} of {tokens} tokens"
+
+
+async def push_reader(
+    s, tokens: int, lat: list[float], resume: list[float] | None
+) -> None:
+    """subscribe(): records are pushed by the append. With `resume`, drop the
+    subscription halfway and resubscribe from the saved offset."""
+    offset = 0
+    disconnect_at = tokens // 2 if resume is not None else None
+    while True:
+        reconnected_at = time.perf_counter() if offset else None
+        live_from = s.next_offset if offset else 0  # below this is replay
+        async with contextlib.aclosing(s.subscribe(offset)) as records:
+            async for rec in records:
+                if reconnected_at is not None:
+                    assert resume is not None
+                    resume.append((time.perf_counter() - reconnected_at) * 1e3)
+                    reconnected_at = None
+                replay = offset < live_from
+                check(rec, offset, time.perf_counter_ns(), None if replay else lat)
+                offset += 1
+                if disconnect_at is not None and offset >= disconnect_at:
+                    break
+            else:
+                break  # stream closed and drained
+        disconnect_at = None
+        await asyncio.sleep(DISCONNECT)  # client gone; tokens pile up
+    assert offset == tokens, f"saw {offset} of {tokens} tokens"
 
 
 async def lag_probe(samples: list[float], stop: asyncio.Event) -> None:
@@ -135,7 +162,8 @@ async def run(chats: int, readers: int, batched: bool, push: bool, tokens: int) 
             jobs.append(writer(s, tokens, batched))
             for r in range(readers):
                 resuming = (c * readers + r) % 4 == 0  # a quarter of the readers
-                jobs.append(reader(s, tokens, push, lat, resume if resuming else None))
+                read = push_reader if push else poll_reader
+                jobs.append(read(s, tokens, lat, resume if resuming else None))
         cpu, t0 = time.process_time(), time.perf_counter()
         results = await asyncio.gather(*jobs)
         wall, cpu = time.perf_counter() - t0, time.process_time() - cpu
