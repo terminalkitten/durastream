@@ -1,4 +1,7 @@
-.PHONY: full check lint format typecheck test test-diskfull bench build demo demo-bench demo-restart demo-queue demo-ledger demo-concurrent demo-serve present-preview present-build
+# dokk builds the docs site (dev dependency; same version as the docs workflow)
+DOKK = uv run dokk
+
+.PHONY: docs-build docs-serve full check lint format typecheck test test-diskfull bench build demo demo-bench demo-restart demo-queue demo-ledger demo-concurrent demo-serve present-preview present-build
 
 # everything, in order: fix formatting, lint + test, benchmark, build dist/
 full:
@@ -62,3 +65,12 @@ demo-serve:
 # swallow trailing positional args (e.g. `make demo-restart 100 50`)
 %:
 	@:
+
+# docs site: check links, then build to .dokk/build/
+docs-build:
+	$(DOKK) check
+	$(DOKK) build
+
+# docs with live reload on http://127.0.0.1:8002/
+docs-serve:
+	$(DOKK) serve

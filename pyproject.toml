@@ -39,6 +39,7 @@ dev = [
     "uvicorn>=0.30",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "dokk[search,serve]>=0.0.4",
 ]
 
 [tool.pytest.ini_options]

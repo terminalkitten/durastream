@@ -1,4 +1,9 @@
-# API reference
+---
+title: API reference
+description: Store, DurableStream, AsyncStore, AsyncBatchWriter, errors and offset tokens.
+sidebar:
+  order: 5
+---
 
 ```python
 from durastream import AsyncBatchWriter, AsyncStore, Store, from_token, to_token
@@ -51,8 +56,10 @@ All derive from `DurastreamError`, so `except DurastreamError` catches every one
 | `CorruptStream` | Bytes on disk no longer match their checksum. |
 | `DurastreamError` | Itself: the store is closed, or the metadata database failed (e.g. `database is locked`). |
 
-A failed write (disk full, I/O error) raises the `OSError` and is rolled back, so
-the log never keeps a partial record.
+:::note
+A failed write (disk full, I/O error) raises the `OSError` and is rolled back, so the log never
+keeps a partial record.
+:::
 
 ## AsyncStore and AsyncDurableStream
 

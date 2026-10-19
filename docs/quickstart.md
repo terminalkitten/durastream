@@ -1,12 +1,15 @@
-# Quick start
+---
+title: Quick start
+description: Write, read, tail and recover a durable stream.
+sidebar:
+  order: 1
+---
 
 ## Install
 
-```bash
-uv add durastream
-```
+::install[durastream]
 
-Requires Python 3.12+. No runtime dependencies: pure Python, stdlib only.
+Requires Python 3.12+, with no runtime dependencies.
 
 ## Write and read
 
@@ -25,9 +28,12 @@ stream.next_offset  # 3
 ```
 
 `append()` frames the record with a length and CRC, then `fsync`s before it
-returns, so the record is durable the moment the call completes. `append_many()`
-does one `fsync` for the whole batch, which is much faster for bulk writes with
-the same guarantee.
+returns, so the record is durable the moment the call completes.
+
+:::tip
+`append_many()` does one `fsync` for the whole batch: much faster for bulk writes, with the same
+guarantee.
+:::
 
 ## Recover after a crash
 
@@ -125,7 +131,7 @@ while offset < queue.next_offset:
         f.write(str(offset))
 ```
 
-For exactly the file plus fsync version, see the queue demo.
+For a crash-safe checkpoint (written to a temp file, fsynced, then renamed), see the [queue demo](demos.md#a-resumable-worker).
 
 ## Rebuild state by replaying the log
 

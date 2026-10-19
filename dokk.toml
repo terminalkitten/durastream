@@ -1,0 +1,13 @@
+title = "dura.stream"
+description = "Tiny durable streaming on local disk: an append-only stream that survives crashes, replays from any offset and tails live."
+site_url = "https://terminalkitten.github.io/durastream/"
+
+[theme]
+color = "blue"
+
+[links]
+github = "https://github.com/terminalkitten/durastream"
+edit_url = "https://github.com/terminalkitten/durastream/edit/main/docs/{path}"
+
+[llms]
+enabled = true

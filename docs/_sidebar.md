@@ -1,6 +1,0 @@
-- [Home](/)
-- [Quick start](quickstart.md)
-- [Concepts](concepts.md)
-- [Concurrency](concurrency.md)
-- [Demos](demos.md)
-- [API reference](api.md)
