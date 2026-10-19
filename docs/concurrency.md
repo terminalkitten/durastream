@@ -22,7 +22,8 @@ writer. Any other process (or a second `Store` in the same process) that opens t
 stream gets a read-only view:
 
 - `stream.writable` is `False`;
-- `read` and `subscribe` work;
+- `read` and `subscribe` work, on the snapshot: `subscribe` replays it and then
+  waits for appends that never come, since only the writer's appends wake it;
 - `append`, `close` and `store.delete` raise `StreamLocked`;
 - the log file is never modified, so a writer mid-append is never disturbed.
 

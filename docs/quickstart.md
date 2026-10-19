@@ -35,10 +35,14 @@ Reopen the store and the log is rebuilt by scanning it. A torn or corrupt tail
 record is dropped, the intact prefix survives.
 
 ```python
-store2 = Store("./data")
-stream = store2.open("orders")
+store.close()  # stop (or crash); then, on restart:
+store = Store("./data")
+stream = store.open("orders")
 stream.read(0)  # the records that were durably written
 ```
+
+A second `Store` on the same directory while the first is still open gets a
+read-only view; see [Concurrency](concurrency.md).
 
 ## Tail like `tail -f`
 
@@ -52,8 +56,8 @@ for record in stream.subscribe(0):  # replay, then follow live
 
 ## Async
 
-`AsyncStore` mirrors the same names, awaitable. Every call runs the sync method
-in `asyncio.to_thread`.
+`AsyncStore` mirrors the same names, awaitable. Blocking calls run in
+`asyncio.to_thread`; `subscribe` and `wait` are pushed by the append itself.
 
 ```python
 from durastream import AsyncStore
@@ -77,6 +81,7 @@ be a separate run that starts from a saved offset.
 ```python
 import threading
 
+store = Store("./data")
 stream = store.create("events", "application/json")
 
 
