@@ -2,7 +2,7 @@
 # (hatch-vcs), nothing to bump. Builds the wheel and sdist and tests the wheel on Linux, macOS and Windows. The
 # publish job then waits for a required reviewer to approve the `pypi` environment
 # (Settings > Environments); once approved it publishes to PyPI and creates the
-# GitHub release with the files attached.
+# GitHub release with the files attached (or publishes a drafted one).
 name: release
 
 on:
@@ -13,16 +13,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # hatch-vcs reads the version from the tag
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: uv build --out-dir dist
       - name: version matches the tag
         run: |
           ls dist
           ls dist/durastream-"${GITHUB_REF_NAME#v}"-py3-none-any.whl
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist
@@ -39,12 +39,12 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4 # for tests/
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7 # for tests/
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.12"
       - run: uv venv && uv pip install pytest pytest-asyncio dist/*.whl
@@ -57,7 +57,7 @@ jobs:
     permissions:
       id-token: write # PyPI trusted publishing
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
@@ -70,7 +70,7 @@ jobs:
     permissions:
       contents: write # create the release
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
@@ -81,5 +81,11 @@ jobs:
         run: |
           # a1 / b2 / rc1 / .dev versions are marked as pre-release
           pre=$([[ "$TAG" =~ (a|b|rc|dev)[0-9]*$ ]] && echo --prerelease || true)
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --generate-notes --title "$TAG" $pre
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # A drafted release (with hand-written notes) gets the files and is published.
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft=false $pre
+          else
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --generate-notes --title "$TAG" $pre
+          fi
