@@ -1,4 +1,9 @@
-# Concurrency
+---
+title: Concurrency
+description: Threads and coroutines in one process, and one writer per stream across processes.
+sidebar:
+  order: 3
+---
 
 dura.stream is a **single process** engine. The distinction that matters is
 threads and coroutines inside one process versus separate OS processes.
@@ -10,7 +15,7 @@ streams, or many writers into one shared stream are all serialized by a per
 stream lock, so offsets stay consistent and no data is lost. Use `AsyncStore`
 from async code.
 
-The `make demo-concurrent` demo shows 40 concurrent users on one store: first a
+The [concurrent users demo](demos.md#concurrent-users) (`make demo-concurrent`) shows 40 concurrent users on one store: first a
 stream per user with no cross talk, then all 40 writing into one shared stream
 while a consumer tails the interleaved firehose with nothing lost.
 
@@ -32,17 +37,24 @@ A read-only view is a snapshot of the log at open time; open it again from a new
 is released when the writer closes its store or exits, including a crash. The next
 process to open the stream then becomes the writer and repairs a torn tail.
 
+:::note[Forked processes]
 A **forked** child (`multiprocessing` with the fork start method, `gunicorn
 --preload`, ...) inherits the parent's open files, lock included, but only the
 process that took the lock may write: in the child every stream is read-only. Open
 stores after forking if the child should write. Note the lock is only released
 once the parent *and* such children have closed the file or exited.
+:::
 
 A process without write access to a log (file permissions, read-only mount) also
 gets a read-only view.
 
 Route each stream to a single owning process (this is the `activeStreamId`
-pattern). On Windows there is no `flock`: the rule is not enforced there.
+pattern).
+
+:::caution[Windows]
+Windows has no `flock`, so the one-writer rule is not enforced there: make sure only one process
+writes to each stream.
+:::
 
 ## SQLite metadata under many processes
 

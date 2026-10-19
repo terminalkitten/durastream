@@ -1,8 +1,13 @@
-# Demos
+---
+title: Demos
+description: Runnable scripts for telemetry, batching, restarts, a work queue, event sourcing and SSE.
+sidebar:
+  order: 4
+---
 
-Each demo is a runnable script that self verifies with asserts. The relevant
-parts are shown below; run the full version with the `make` target named at the
-end of each section.
+Each demo is a runnable script in [`demos/`](https://github.com/terminalkitten/durastream/tree/main/demos)
+that checks itself with asserts. The relevant parts are shown below; run the full version from a
+clone of the repository with the `make` target at the end of each section.
 
 ## Durable telemetry ingest
 
@@ -22,7 +27,7 @@ for record in stream.subscribe(0):
     handle(record)
 ```
 
-`make demo`
+Run it: `make demo`
 
 ## Batching the fsync
 
@@ -37,7 +42,7 @@ for r in records:  # one fsync each
 stream.append_many(records)  # one fsync total, roughly 27x faster
 ```
 
-`make demo-bench`
+Run it: `make demo-bench`
 
 ## Stop and restart
 
@@ -53,7 +58,7 @@ store.close()  # stop
 # next run: reopen, next_offset is restored by scanning the log
 ```
 
-`make demo-restart` (accepts `make demo-restart 100000 10`)
+Run it: `make demo-restart` (accepts `make demo-restart 100000 10`)
 
 ## A resumable worker
 
@@ -71,7 +76,7 @@ while offset < queue.next_offset:
     write_checkpoint(path, offset)  # commit only after a full chunk
 ```
 
-`make demo-queue`
+Run it: `make demo-queue`
 
 ## Event sourcing
 
@@ -88,13 +93,13 @@ for raw in store.open("account").read(0):
     balance = apply(balance, json.loads(raw))
 ```
 
-`make demo-ledger`
+Run it: `make demo-ledger`
 
 ## Concurrent users
 
 Many users on one store in a single process. A stream per user has no cross talk;
 many users into one shared stream stay coordinated by the per stream lock, with
-nothing lost. See the [Concurrency](concurrency.md) page.
+nothing lost. See [Concurrency](concurrency.md).
 
 ```python
 store = AsyncStore(root)
@@ -108,7 +113,7 @@ async def user(u):
 await asyncio.gather(*(user(u) for u in range(40)))
 ```
 
-`make demo-concurrent`
+Run it: `make demo-concurrent`
 
 ## Resumable HTTP streaming
 
@@ -130,4 +135,4 @@ On reconnect the client sends its last `id`, and the server resumes at the next
 offset (`from_token(last_id, s.next_offset) + 1`). `subscribe` gets each token the
 moment it is appended, with no polling.
 
-`make demo-serve`
+Run it: `make demo-serve`
